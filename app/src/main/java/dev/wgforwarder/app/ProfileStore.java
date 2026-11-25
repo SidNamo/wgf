@@ -277,7 +277,7 @@ final class ProfileStore {
             int target = r.getInt("targetPort");
             String host = r.getString("targetHost");
             String mode = r.optString("mode", "tcp");
-            if (local < 1024 || local > 65535 || target < 1 || target > 65535 || !validIPv4(host) ||
+            if ((local != 443 && (local < 1024 || local > 65535)) || target < 1 || target > 65535 || !validIPv4(host) ||
                     (!"tcp".equals(mode) && !"http-https".equals(mode))) {
                 throw new IllegalArgumentException("백업에 잘못된 포워딩 규칙이 있습니다.");
             }

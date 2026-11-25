@@ -236,6 +236,9 @@ public final class MainActivity extends Activity {
                 + "HTTP→HTTPS 모드는 로컬 HTTP 요청을 원격 HTTPS 서버로 중계하고, "
                 + "설정한 도메인으로 TLS 인증서를 검증합니다. "
                 + "로컬 앱과 이 앱 사이의 HTTP 통신은 암호화되지 않습니다.", 12));
+        root.addView(text("TCP 모드에서는 여러 HTTPS 도메인이 같은 서버 IP·포트를 사용해도 "
+                + "요청의 TLS SNI를 변경하지 않고 전달합니다. 도메인을 127.0.0.1로 해석하는 DNS 설정은 "
+                + "이 앱 외부에서 구성해야 하며, 로컬 443 포트 사용 가능 여부는 기기마다 다릅니다.", 12));
         root.addView(text("④ '연결'은 로컬 포워딩이 시작되었다는 뜻입니다. "
                 + "원격 서버에 실제로 접속 가능한지는 각 규칙의 '연결 테스트'로 확인하세요. "
                 + "백그라운드에서 계속 사용하려면 연결을 유지하고, 중지하려면 '연결 종료'를 누르세요.", 12));
@@ -542,6 +545,8 @@ public final class MainActivity extends Activity {
         form.setPadding(dp(18), 0, dp(18), 0);
         EditText name = field(form, "규칙 이름", old == null ? "" : old.optString("name"), false);
         EditText local = field(form, "로컬 포트", old == null ? "" : "" + old.optInt("localPort"), true);
+        form.addView(text("443 포트는 기기 보안 정책에 따라 수신이 거부될 수 있습니다. "
+                + "수신 실패 시 8443 같은 포트를 사용하세요.", 12));
         EditText host = field(form, "서버 IPv4", old == null ? "" : old.optString("targetHost"), false);
         EditText remote = field(form, "서버 포트", old == null ? "" : "" + old.optInt("targetPort"), true);
         Spinner mode = new Spinner(this);
@@ -570,7 +575,7 @@ public final class MainActivity extends Activity {
                         int lp = Integer.parseInt(local.getText().toString());
                         int rp = Integer.parseInt(remote.getText().toString());
                         String ip = host.getText().toString().trim();
-                        if (lp < 1024 || lp > 65535 || rp < 1 || rp > 65535 || !validIpv4(ip)) {
+                        if ((lp != 443 && (lp < 1024 || lp > 65535)) || rp < 1 || rp > 65535 || !validIpv4(ip)) {
                             throw new IllegalArgumentException("포트 또는 IPv4 주소를 확인하세요.");
                         }
                         JSONArray rules = store.rules();

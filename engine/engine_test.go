@@ -16,8 +16,18 @@ func TestDuplicatePorts(t *testing.T) {
 	}
 }
 
+// The unmodified TCP path also carries TLS ClientHello/SNI to the target.
+// Port 443 can be configured, but Android may reject binding it at runtime.
+func TestHTTPSPassthroughLocalPort443(t *testing.T) {
+	rules, err := validateRules(`[{"name":"HTTPS TCP passthrough","localPort":443,"targetHost":"192.168.0.230","targetPort":443,"enabled":true,"mode":"tcp"}]`)
+	if err != nil || len(rules) != 1 || rules[0].LocalPort != 443 || rules[0].Mode != "tcp" {
+		t.Fatalf("expected a valid raw TCP passthrough on local 443: %v, %+v", err, rules)
+	}
+}
+
 func TestInvalidInputs(t *testing.T) {
 	cases := []string{
+		`[{"localPort":0,"targetHost":"192.168.0.230","targetPort":443,"enabled":true}]`,
 		`[{"localPort":80,"targetHost":"192.168.0.230","targetPort":5212,"enabled":true}]`,
 		`[{"localPort":5212,"targetHost":"localhost","targetPort":5212,"enabled":true}]`,
 		`[{"localPort":5212,"targetHost":"127.0.0.1","targetPort":5212,"enabled":true}]`,

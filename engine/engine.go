@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/go-ini/ini"
@@ -98,7 +99,7 @@ func validateRules(raw string) ([]rule, error) {
 		if !r.Enabled {
 			continue
 		}
-		if r.LocalPort < 1024 || r.LocalPort > 65535 || r.TargetPort < 1 || r.TargetPort > 65535 {
+		if (r.LocalPort != 443 && (r.LocalPort < 1024 || r.LocalPort > 65535)) || r.TargetPort < 1 || r.TargetPort > 65535 {
 			return nil, fmt.Errorf("invalid TCP port in rule %q", r.Name)
 		}
 		ip, err := netip.ParseAddr(strings.TrimSpace(r.TargetHost))
@@ -157,6 +158,9 @@ func Start(configText, routesJSON string) error {
 		l, listenErr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", r.LocalPort))
 		if listenErr != nil {
 			s.close()
+			if r.LocalPort == 443 && (errors.Is(listenErr, syscall.EACCES) || errors.Is(listenErr, syscall.EPERM)) {
+				return fmt.Errorf("Android denied local TCP port 443; use a port such as 8443 (and include :8443 in the URL): %w", listenErr)
+			}
 			return fmt.Errorf("could not listen on 127.0.0.1:%d: %w", r.LocalPort, listenErr)
 		}
 		s.listeners = append(s.listeners, l)
