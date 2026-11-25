@@ -39,6 +39,7 @@ jobs:
         run: go test ./engine -v
       - name: Create Android AAR
         run: |
+          mkdir -p app/libs
           "$(go env GOPATH)/bin/gomobile" init
           "$(go env GOPATH)/bin/gomobile" bind -target=android/arm64 -androidapi=26 -o app/libs/engine.aar ./engine
       - name: Configure Gradle
