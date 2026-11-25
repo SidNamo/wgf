@@ -15,6 +15,7 @@ fi
 go mod tidy
 go test ./engine
 bash scripts/test-backup-codec.sh
+bash scripts/test-log-store.sh
 mkdir -p app/libs
 gomobile init
 gomobile bind -target=android/arm64 -androidapi=26 -o app/libs/engine.aar ./engine

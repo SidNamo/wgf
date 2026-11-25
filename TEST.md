@@ -20,9 +20,9 @@
 - [ ] Android 앱 컴파일 — **미실행**: Android SDK / Gradle / gomobile 부재
 - [ ] APK 생성 — **미완료**
 - [ ] QR 카메라로 실제 등록 — **미검증**
-- [ ] 삼성 Galaxy Z Fold7 설치 및 유니콘 Pro 동시 작동 — **미검증**
-- [ ] ipTIME WireGuard 실제 핸드셰이크 / Cloudreve TCP 접속 — **미검증**
-- [ ] Autosync WebDAV 실제 파일 전송 — **미검증**
+- [ ] arm64 Android 기기 설치 및 기존 VPN과 동시 작동 — **미검증**
+- [ ] WireGuard 서버 실제 핸드셰이크 / 목적지 TCP 접속 — **미검증**
+- [ ] 클라이언트 앱 실제 파일 전송 — **미검증**
 - [ ] 백그라운드 / 부팅 / 재연결 — **미검증**
 
 ## 빌드 불가 근거
@@ -51,7 +51,7 @@ SDK/Gradle 다운로드 및 Google Play Services, Android 기기 런타임 동�
 - [x] 신규 규칙 추가 시 이름·로컬 포트·대상 IPv4·대상 포트를 빈칸으로 표시
 - [x] 모드 기본값은 `TCP 그대로 전달`이며 기존 저장 규칙의 모드가 없으면 TCP로 처리
 - [x] 앱 첫 실행의 예시 포워딩 규칙 자동 생성 제거 (기존 저장 규칙은 보존)
-- [x] 선택 모드 `HTTP → HTTPS (NPM)` 추가: 내부 WireGuard TCP 경로로 NPM IP:443에 연결, TLS SNI·HTTP Host는 사용자 입력 도메인 사용
+- [x] 선택 모드 `HTTP → HTTPS` 추가: 내부 WireGuard TCP 경로로 원격 서버 IP:443에 연결, TLS SNI·HTTP Host는 사용자 입력 도메인 사용
 - [x] HTTPS 인증서의 서명·호스트명을 검증하며 TLS 검증 우회 금지
 - [x] WebDAV 요청 본문 스트리밍, 인증 헤더, `MOVE`/`COPY` Destination 헤더, 리다이렉트 URL 처리
 - [x] 업로드/다운로드 통계를 누적량 대신 최근 구간의 전송 속도(B/s, KB/s, MB/s)로 표시 (화면 재진입 시 새 샘플링 시작)
@@ -69,9 +69,9 @@ SDK/Gradle 다운로드 및 Google Play Services, Android 기기 런타임 동�
 - [x] 신규 규칙 빈칸, 기본 TCP 모드, 초기 예제 규칙 삭제, 워크플로 수정 정적 검사 통과
 - [ ] **전체 Go 엔진 `go test ./engine`** 미검증: 현재 환경 Go 1.23.2 (프로젝트 Go 1.26.0 요구), 외부 모듈 다운로드 불가
 - [ ] **Android APK 빌드 / 설치** 미검증: Android SDK, Gradle, Docker 부재
-- [ ] Android 실기기에서 WGF+유니콘 Pro 공존, HTTPS NPM 접속, Autosync WebDAV 대용량 전송 미검증
+- [ ] Android 실기기에서 다른 VPN과 WGF 공존, 원격 HTTPS 접속, 대용량 파일 전송 미검증
 
-**주의:** 독립 단위 테스트의 네트워크 연결에는 테스트용 로컬 TLS 서버가 사용됐습니다. 실제 WireGuard 터널, NPM, Cloudreve에 연결한 것은 아닙니다. 이 소스는 이전 대화에서 생성한 WGF 프로젝트에 대한 변경본이며, 별도로 Claude가 생성한 프로젝트를 받아 직접 수정한 것은 아닙니다.
+**주의:** 독립 단위 테스트의 네트워크 연결에는 테스트용 로컬 TLS 서버가 사용됐습니다. 실제 WireGuard 터널과 원격 서버에 연결한 것은 아닙니다. 이 소스는 이전 대화에서 생성한 WGF 프로젝트에 대한 변경본이며, 별도로 Claude가 생성한 프로젝트를 받아 직접 수정한 것은 아닙니다.
 
 ## 앱 아이콘 추가 점검
 
@@ -99,3 +99,12 @@ SDK/Gradle 다운로드 및 Google Play Services, Android 기기 런타임 동�
 - **백업:** AES-256-GCM + PBKDF2-HMAC-SHA256(25만 회) 암호화; 비밀번호 필수; QR로 등록한 프로필·암호화된 원본 설정을 복원 가능한 휴대용 파일로 내보냄. 포워딩 규칙 및 옵션 포함.
 - **백업 포맷 테스트:** Java 17에서 정상 복호화, 다른 암호 거부, 변조 감지, 반복 암호화 시 서로 다른 결과 확인 통과 (`bash scripts/test-backup-codec.sh`).
 - **미검증:** Android SDK/Go 1.26과 앱 전체 컴파일, Galaxy Fold7 실기기에서 백업 UI 및 복원 경로, 실제 TLS 인증서 실서버 연결.
+
+## 2026-11-25 장시간 실행 및 범용 안내 개선
+
+- [x] `LogStore`가 이벤트별 개별 파일을 만들지 않고 **2×32KiB** 로그만 유지하도록 변경, 지나치게 긴 오류 문구 제한
+- [x] Foreground Service의 `stopWithTask=false` 명시: 앱 작업을 닫아도 연결 서비스 유지
+- [x] 배터리 제한 설정으로 이동하는 버튼 및 운영 안내 추가 (OS 강제 종료 방지는 보장 불가)
+- [x] 앱의 특정 VPN/동기화 도구/장비/서버 제품 이름과 개인 환경 예시 제거, 범용 작동 방식 안내로 교체
+- [x] `LogStoreTest`: 6,000건 기록 후 로그 상한, 최신 기록, 장문 입력 테스트
+- [ ] Android APK 컴파일 및 실기기 장시간 동작 시험은 현 환경에서 미실행

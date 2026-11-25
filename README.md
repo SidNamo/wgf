@@ -1,12 +1,12 @@
 # WireGuard Forwarder — Android
 
-집의 ipTIME WireGuard 서버로 접속하는 사용자 공간(user-space) WireGuard TCP 포트 포워더입니다. 일반 Android VPN(VpnService)을 등록하지 않으므로 유니콘 Pro 같은 기존 Android VPN과 *VPN 슬롯 충돌 없이 공존하도록 설계*했습니다. 실제 VPN 동시 작동 여부와 백그라운드 안정성은 기기에서 테스트해야 합니다.
+원격 WireGuard 서버에 접속하는 사용자 공간(user-space) WireGuard TCP 포트 포워더입니다. 일반 Android VPN(VpnService)을 등록하지 않으므로 다른 Android VPN과 *VPN 슬롯 충돌 없이 공존하도록 설계*했습니다. 실제 VPN 동시 작동 여부와 백그라운드 안정성은 기기에서 테스트해야 합니다.
 
 > **개발 상태 (2026-11-25):** Docker Compose 로컬 빌드 구성을 추가했습니다. 이 실행 환경에는 Docker/Android SDK/Gradle 및 필요한 패키지 다운로드 접근이 없어 **실제 APK 빌드·설치·실기기 테스트는 미완료**입니다. 빌드 성공이나 앱 동작이 보장된 결과물은 아닙니다.
 
 ## 앱 아이콘
 
-WireGuard의 짙은 적색(#88171A)과 유니콘 Pro의 코랄 레드 계열을 조합한 독립적인 WGF 보안 터널 아이콘을 포함했습니다. (두 서비스의 공식 로고를 사용한 것은 아닙니다.) 일반 및 원형 런처 아이콘과 Android 8.0 이상 Adaptive Icon을 지원합니다. `app/src/main/AndroidManifest.xml`의 `android:icon` 및 `android:roundIcon`에 연결되어 있으며, `app/src/main/res/mipmap-*`의 PNG와 `mipmap-anydpi-v26`의 XML에서 관리합니다. 애플리케이션 네트워크 기능은 변경하지 않았습니다.
+짙은 적색(#88171A)과 코랄 레드 계열을 조합한 독립적인 WGF 보안 터널 아이콘을 포함했습니다. (외부 서비스의 공식 로고는 사용하지 않습니다.) 일반 및 원형 런처 아이콘과 Android 8.0 이상 Adaptive Icon을 지원합니다. `app/src/main/AndroidManifest.xml`의 `android:icon` 및 `android:roundIcon`에 연결되어 있으며, `app/src/main/res/mipmap-*`의 PNG와 `mipmap-anydpi-v26`의 XML에서 관리합니다. 애플리케이션 네트워크 기능은 변경하지 않았습니다.
 
 ## 기능
 
@@ -15,9 +15,9 @@ WireGuard의 짙은 적색(#88171A)과 유니콘 Pro의 코랄 레드 계열을 
 - **WireGuard 설정 내용 직접 입력 및 기존 프로필 수정** (이름 + `.conf` 원문 편집)
 - 여러 WireGuard 프로필 저장 및 선택
 - Android Keystore AES-256-GCM으로 개인키가 포함된 설정 파일 암호화 저장 (백업 제외)
-- `127.0.0.1:<포트>` → `<집 PC IPv4>:<포트>` TCP 포워딩 여러 개
+- `127.0.0.1:<포트>` → `<원격 서버 IPv4>:<포트>` TCP 포워딩 여러 개
 - TCP 목적지 연결 테스트, **업로드/다운로드 현재 속도(B/s·KB/s·MB/s)**, 실행 로그
-- **규칙별 두 가지 모드:** 기본 TCP 포워딩 또는 `HTTP → HTTPS (NPM)` 전환
+- **규칙별 두 가지 모드:** 기본 TCP 포워딩 또는 `HTTP → HTTPS` 전환
 - **암호화 설정 백업 및 복원:** WireGuard 프로필/개인키, 포워딩 규칙, 부팅 시 자동 실행 및 재연결 설정 포함
 - Foreground Service, 부팅 시 연결 시도, 기본 네트워크 변경 시 재연결 시도
 - 루팅과 `VpnService` 권한 불필요
@@ -25,7 +25,7 @@ WireGuard의 짙은 적색(#88171A)과 유니콘 Pro의 코랄 레드 계열을 
 ## 프로필 등록 방법
 
 1. 앱 설치 후 **QR 스캔**, **.conf 파일**, **직접 입력** 중 하나 선택.
-2. QR 스캔 시 ipTIME에 표시되는 WireGuard 클라이언트 QR을 카메라로 스캔. QR에는 전체 `[Interface]` / `[Peer]` 설정과 개인키가 포함되어 있어야 합니다.
+2. QR 스캔 시 WireGuard 서버에서 발급한 클라이언트 설정 QR을 카메라로 스캔. QR에는 전체 `[Interface]` / `[Peer]` 설정과 개인키가 포함되어 있어야 합니다.
 3. 설정 편집기에 프로필 이름과 WireGuard 원문이 표시됩니다. 값 확인 후 **저장**.
 4. 이미 등록한 프로필은 목록에서 선택 → **프로필 수정**. 연결 중에는 먼저 연결 종료.
 5. QR 스캐너는 **Google Play 서비스**의 Code Scanner API를 사용합니다. CAMERA 권한을 요구하지 않으나 첫 사용 시 스캐너 구성 요소를 다운로드할 수 있어 인터넷 연결이 필요할 수 있습니다. Google Play 서비스가 없는 기기에서는 `.conf` 파일 또는 직접 입력을 사용하세요.
@@ -50,20 +50,20 @@ WireGuard의 짙은 적색(#88171A)과 유니콘 Pro의 코랄 레드 계열을 
 ```ini
 [Interface]
 PrivateKey = <내 WireGuard 클라이언트 개인키>
-Address = 10.107.221.5/24
-DNS = 168.126.63.1
+Address = 10.10.0.2/24
+DNS = 1.1.1.1
 
 [Peer]
-PublicKey = <ipTIME WireGuard 서버 공개키>
+PublicKey = <WireGuard 서버 공개키>
 PresharedKey = <미사용이면 행 제거>
-Endpoint = <공유기 DDNS 주소>:<WireGuard UDP 포트>
-AllowedIPs = 192.168.0.230/32
+Endpoint = <WireGuard 서버 주소>:<WireGuard UDP 포트>
+AllowedIPs = 192.168.10.10/32
 PersistentKeepalive = 25
 ```
 
-- `AllowedIPs`는 목적지 PC의 IP 대역을 포함해야 합니다. `192.168.0.230/32`는 **해당 PC 한 대만** 의미합니다.
-- WireGuard UDP 포트와 Cloudreve의 TCP 5212 포트는 **서로 다른 역할**입니다.
-- ipTIME 공유기에서 WireGuard를 서비스한다면 Cloudreve 5212를 인터넷으로 포트 포워딩할 필요는 없습니다. 집 PC의 Docker Compose에 `5212:5212`를 게시하고, 로컬 방화벽에서 필요한 접근만 허용하세요.
+- `AllowedIPs`는 원격 목적지의 IP 대역을 포함해야 합니다. `192.168.10.10/32`는 **해당 서버 IP 하나만** 의미합니다.
+- WireGuard 서버의 UDP 포트와 목적지 서비스의 TCP 포트는 **서로 다른 역할**입니다.
+- 목적지 서비스는 WireGuard 서버가 라우팅할 수 있는 내부 주소에서 수신 중이어야 합니다. 외부 인터넷에 서비스 포트를 개방할 필요는 없으며, 내부 방화벽의 접근 허용 여부를 확인하세요.
 
 ## 포워딩 규칙 설정
 
@@ -73,46 +73,53 @@ PersistentKeepalive = 25
 
 | 설정 | 값 (예시) |
 |---|---|
-| 규칙 이름 | Cloudreve |
+| 규칙 이름 | 내부 웹 서비스 |
 | 로컬 포트 | `5212` |
-| 대상 IPv4 | `192.168.0.230` |
+| 대상 IPv4 | `192.168.10.10` |
 | 대상 포트 | `5212` |
 | 모드 | TCP 그대로 전달 |
 
-Autosync: `http://127.0.0.1:5212/<실제 WebDAV 경로>`
+접속 예시: `http://127.0.0.1:5212/<서비스 경로>`
 
 이 모드는 HTTP·HTTPS 등 **TCP 데이터를 변경하지 않고** WireGuard로 전달합니다. HTTPS 목적지에 HTTP 요청을 보내면 HTTPS로 자동 변환되지 않습니다.
 
-### 모드 2 — HTTP → HTTPS (NPM)
+### 모드 2 — HTTP → HTTPS
 
-**가능한 경로:** `Autosync (HTTP localhost) → WGF (TLS 연결 생성) → WireGuard → ipTIME → 집 PC NPM:443 (SNI/Host 이름으로 프록시 호스트 선택) → WebDAV`.
+**연결 경로:** `클라이언트 앱 (HTTP localhost) → WGF (TLS 연결 생성) → WireGuard → 원격 네트워크 → HTTPS 서버/역방향 프록시 (SNI·Host로 호스트 구분) → 대상 서비스`.
 
 | 설정 | 값 (예시) |
 |---|---|
-| 규칙 이름 | WebDAV HTTPS |
+| 규칙 이름 | 내부 HTTPS 서비스 |
 | 로컬 포트 | `5213` |
-| 대상 IPv4 | `192.168.0.230` |
+| 대상 IPv4 | `192.168.10.10` |
 | 대상 포트 | `443` |
-| 모드 | HTTP → HTTPS (NPM) |
-| NPM HTTPS 도메인 | `dav.example.com` |
+| 모드 | HTTP → HTTPS |
+| HTTPS 인증서 도메인 | `service.example.com` |
 
-Autosync: `http://127.0.0.1:5213/<실제 WebDAV 경로>`
+접속 예시: `http://127.0.0.1:5213/<서비스 경로>`
 
-이 모드는 **외부 DNS를 이용하지 않고** 내부 IP `192.168.0.230:443`으로 WireGuard TCP 접속합니다. TLS SNI 및 HTTP Host는 `dav.example.com`으로 설정하며, **Android가 신뢰하는 인증기관과 도메인 일치를 검증**합니다. 인증서를 신뢰하지 못하거나 이름이 맞지 않으면 연결을 거부합니다. NPM은 `dav.example.com`용 HTTPS 인증서와 프록시 호스트 설정을 가지고 있어야 합니다. `dav2.example.com`도 이용하려면 다른 로컬 포트(예: `5214`)에 HTTPS 규칙을 추가하세요.
+이 모드는 **외부 DNS를 이용하지 않고** 내부 IP `192.168.10.10:443`으로 WireGuard TCP 접속합니다. TLS SNI 및 HTTP Host는 `service.example.com`으로 설정하며, **Android가 신뢰하는 인증기관과 도메인 일치를 검증**합니다. 인증서를 신뢰하지 못하거나 이름이 맞지 않으면 연결을 거부합니다. 원격 HTTPS 서버는 `service.example.com`과 일치하는 유효한 인증서가 있어야 합니다. 다른 도메인을 이용하려면 별도의 로컬 포트에 HTTPS 규칙을 추가하세요.
 
-**안전성 구분:** Autosync에서 WGF까지의 `127.0.0.1` 구간은 HTTP 평문이며, WGF부터 NPM까지는 TLS + WireGuard입니다. HTTPS는 서버에서 NPM까지 전달되는 구간을 종단 간 보호하지만, NPM→컨테이너는 기존 NPM 백엔드 설정에 따릅니다. 공유기 포트포워딩이나 Cloudflare Tunnel이 필요하지 않으며, 외부 WireGuard UDP 서버 접속은 유지해야 합니다.
+**안전성 구분:** 클라이언트 앱에서 WGF까지의 `127.0.0.1` 구간은 HTTP 평문이며, WGF부터 원격 HTTPS 서버까지는 TLS + WireGuard입니다. 이후 역방향 프록시가 있다면 내부 서비스와의 암호화 여부는 해당 서버 설정에 따릅니다. 인터넷에 내부 서비스 포트를 직접 공개하지 않아도 되지만 WireGuard 서버 자체는 접근 가능해야 합니다.
 
-**실제 운영 주의:** HTTP와 HTTPS 모드는 같은 로컬 포트를 공유할 수 없으므로 포트가 달라야 합니다. WebDAV MOVE/COPY의 `Destination` 헤더 및 HTTPS 응답의 리디렉션 주소는 로컬 주소로 변환합니다. 일부 WebDAV 서버의 쿠키, 절대 URL, 로그인 리디렉션 또는 대용량 전송 호환성은 실기기에서 검증해야 합니다. TLS 인증서 검증을 비활성화하지 않습니다.
+**실제 운영 주의:** HTTP와 HTTPS 모드는 같은 로컬 포트를 공유할 수 없으므로 포트가 달라야 합니다. HTTP/WebDAV MOVE/COPY의 `Destination` 헤더 및 HTTPS 응답의 리디렉션 주소는 로컬 주소로 변환합니다. 일부 서버의 쿠키, 절대 URL, 로그인 리디렉션 또는 대용량 전송 호환성은 실기기에서 검증해야 합니다. TLS 인증서 검증을 비활성화하지 않습니다.
 
 ### 속도 표시
 
 연결 화면에는 누적 전송량 대신 **현재 업로드/다운로드 속도(B/s, KB/s, MB/s)** 를 표시합니다. 화면이 열려 있는 동안 약 1.5초마다 최근 바이트 증가량을 측정합니다. 화면을 다시 열면 이전 화면 중단 시간의 전송량을 섞지 않고 새 측정 구간을 시작합니다. 연결이 끊기면 수치는 초기화됩니다.
 
+## 장시간 백그라운드 실행과 로그
+
+- 연결을 시작하면 Android `connectedDevice` Foreground Service가 실행되고 상태 알림이 표시됩니다. **화면을 닫거나 다른 앱을 사용해도 서비스는 계속 실행**되도록 구성했습니다. 알림의 **연결 종료** 또는 앱의 연결 종료 버튼으로 중지합니다.
+- **실행 설정 → 앱 정보 열기 (배터리 설정)**에서 앱의 배터리 사용을 **제한 없음**으로 조정하면 제조사 절전 정책으로 인한 중단 가능성을 줄일 수 있습니다. Android가 강제로 서비스를 종료하는 상황까지 보장하지는 않습니다.
+- **부팅 후 자동 연결** 및 **네트워크 변경 시 재연결**은 각각 켜고 끌 수 있습니다. OS 제한으로 부팅 시 자동 실행이 실패할 수 있습니다.
+- 이벤트 및 오류 로그는 `forwarder.log` / `forwarder.old.log` 2개만 사용하고, 각 파일을 최대 **32KiB**로 유지합니다. 총 저장량은 약 **64KiB** 이하여서 장시간 실행해도 계속 증가하지 않습니다. 전송 패킷은 로그로 기록하지 않습니다.
+
 ## 연결 테스트
 
-**연결** → 원하는 규칙의 **연결 테스트**로 목적지에 실제 TCP 연결을 시도합니다. HTTPS 모드에서는 인증서/호스트 검증을 포함한 TLS 핸드셰이크까지 확인합니다. 테스트가 성공하면 Chrome에서 `http://127.0.0.1:<규칙 로컬 포트>/`로 접속하세요.
+**연결** → 원하는 규칙의 **연결 테스트**로 목적지에 실제 TCP 연결을 시도합니다. HTTPS 모드에서는 인증서/호스트 검증을 포함한 TLS 핸드셰이크까지 확인합니다. 테스트가 성공하면 브라우저에서 `http://127.0.0.1:<규칙 로컬 포트>/`로 접속하세요.
 
-Cloudreve WebDAV 경로는 Cloudreve 자체 설정에서 확인하세요. Autosync가 HTTP localhost 접속을 허용하는지도 별도 확인해야 합니다. **로컬 포트 포워딩은 TCP만 해당하며**, 일반 앱의 전체 트래픽을 WireGuard로 강제 전송하지 않습니다.
+접속 경로는 대상 서비스 설정에서 확인하세요. 연결할 앱이 HTTP localhost 접속을 허용하는지 별도 확인해야 합니다. **로컬 포트 포워딩은 TCP만 해당하며**, 일반 앱의 전체 트래픽을 WireGuard로 강제 전송하지 않습니다.
 
 ## 로컬 Docker Compose 빌드 (추천)
 
@@ -130,7 +137,7 @@ docker compose run --rm --build apk
 dist/WireGuard Forwarder.apk
 ```
 
-기존 `dist/WireGuard Forwarder.apk`가 있으면 정상 빌드가 완료된 뒤 같은 이름으로 덮어씁니다. GitHub Actions도 동일한 파일명으로 내보냅니다. Windows PowerShell에서도 같은 명령어를 실행할 수 있습니다. Android 기기로 APK를 옮겨 직접 설치하면 됩니다. `arm64-v8a` 전용 debug APK이므로 갤럭시 Z Fold7에 맞지만 다른 CPU 구조를 가진 기기는 지원하지 않습니다. 정식 스토어 배포용 서명은 포함하지 않았습니다.
+기존 `dist/WireGuard Forwarder.apk`가 있으면 정상 빌드가 완료된 뒤 같은 이름으로 덮어씁니다. GitHub Actions도 동일한 파일명으로 내보냅니다. Windows PowerShell에서도 같은 명령어를 실행할 수 있습니다. Android 기기로 APK를 옮겨 직접 설치하면 됩니다. `arm64-v8a` 전용 debug APK이므로 arm64 Android 기기를 대상으로 하며 다른 CPU 구조를 가진 기기는 지원하지 않습니다. 정식 스토어 배포용 서명은 포함하지 않았습니다.
 
 - `Dockerfile`: Go 1.26, Java 17, Gradle 8.9, Android SDK 35, NDK 27.2, gomobile 설치
 - `docker-compose.yml`: 소스 폴더를 마운트하고 Go/Gradle 빌드 캐시 보관
@@ -144,14 +151,14 @@ dist/WireGuard Forwarder.apk
 docker compose run --rm --build apk 2>&1 | tee build.log
 ```
 
-> **주의:** Docker Compose는 **집 PC에서 Android APK를 빌드하는 도구**이며, 실행 중인 서비스 컨테이너가 아닙니다. 앱 자체는 휴대폰에 설치해 실행합니다. `docker compose`를 실행한다고 휴대폰의 WireGuard 연결이 설정되지는 않습니다.
+> **주의:** Docker Compose는 **개발 PC에서 Android APK를 빌드하는 도구**이며, 실행 중인 서비스 컨테이너가 아닙니다. 앱 자체는 휴대폰에 설치해 실행합니다. `docker compose`를 실행한다고 휴대폰의 WireGuard 연결이 설정되지는 않습니다.
 
 ## GitHub Actions 빌드 (대안)
 
 1. 이 ZIP의 프로젝트 **내용 전체**를 GitHub 저장소의 루트에 업로드하세요. (공개 저장소에 개인키나 실제 `.conf`를 올리지 마세요.)
 2. 저장소 → **Actions** → **Build Android APK** → **Run workflow**. 기본 브랜치가 `main`/`master`이면 push 시에도 빌드됩니다.
 3. 성공하면 해당 워크플로 실행 화면의 **Artifacts**에서 `WireGuardForwarder-APK`를 내려받습니다. 그 안의 `WireGuard Forwarder.apk`가 설치용 파일입니다.
-4. Galaxy Z Fold7에서 APK를 설치합니다. 개발용 debug 서명이므로 공식 스토어 배포용이 아닙니다.
+4. arm64 Android 기기에 APK를 설치합니다. 개발용 debug 서명이므로 공식 스토어 배포용이 아닙니다.
 
 워크플로는 Go 1.26, Android SDK 35, NDK 27.2, Gradle 8.9, gomobile을 설치하고 엔진을 `arm64` AAR로 만든 뒤 Android APK를 빌드하도록 설정되어 있습니다. **실제 CI 실행 성공 여부는 검증하지 못했습니다.** Go 엔진 테스트 후 암호화 백업 포맷의 Java 회귀 테스트도 실행합니다.
 
@@ -160,11 +167,11 @@ docker compose run --rm --build apk 2>&1 | tee build.log
 ## 알려진 제약 및 미검증 사항
 
 - APK가 이 환경에서 빌드되지 않아 Android 컴파일 및 설치 결과가 검증되지 않았습니다.
-- WireGuard ipTIME 연결, 유니콘 Pro와의 공존, 화면 OFF 상태 동기화, 네트워크 자동 복구, 실제 AutoSync 연동은 실기기 검증이 필요합니다.
+- 실제 WireGuard 서버 연결, 다른 Android VPN과의 공존, 화면 OFF 상태의 데이터 전송, 네트워크 자동 복구 및 클라이언트 앱 호환성은 실기기 검증이 필요합니다.
 - QR 스캔은 카메라 방식이며 **갤러리에 저장된 QR 이미지 선택**은 구현하지 않았습니다.
 - QR 스캔은 Google Play 서비스가 필요한 방법입니다. 오프라인 환경에서는 `.conf` 또는 직접 입력을 사용하세요.
 - TCP 프록시는 앱 내부의 로컬 포트에서 수신한 TCP만 터널로 전달합니다. UDP 포워딩·TUN 전송은 제공하지 않습니다.
-- GitLab·OriginVault 포트 매핑은 초기값으로 추가하지 않았습니다. 실제 Docker 호스트 포트를 확인한 뒤 규칙을 추가하세요.
+- 포트 매핑 규칙은 초기값으로 추가하지 않았습니다. 실제 목적지 IP와 포트를 확인한 뒤 규칙을 추가하세요.
 
 ## 의존성
 

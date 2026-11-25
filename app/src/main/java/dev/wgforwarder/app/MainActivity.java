@@ -7,6 +7,8 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
+import android.provider.Settings;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -134,7 +136,7 @@ public final class MainActivity extends Activity {
         TextView heading = text("WireGuard Forwarder", 23);
         heading.setTypeface(null, 1);
         root.addView(heading);
-        root.addView(text("유니콘 Pro 유지 · VpnService 미사용 · TCP / HTTP→HTTPS 중계", 12));
+        root.addView(text("다른 VPN과 병행 가능 · VpnService 미사용 · TCP / HTTP→HTTPS 중계", 12));
 
         root.addView(text("WireGuard 프로필", 18));
         profiles = new Spinner(this);
@@ -179,7 +181,7 @@ public final class MainActivity extends Activity {
         root.addView(titleRow);
         routesView = column();
         root.addView(routesView);
-        root.addView(text("TCP: 데이터를 그대로 전달 / HTTP→HTTPS: 로컬 HTTP를 WireGuard 경유 HTTPS(NPM)로 변환", 12));
+        root.addView(text("TCP: 데이터 변경 없이 중계 / HTTP→HTTPS: 로컬 HTTP를 원격 HTTPS로 변환", 12));
 
         root.addView(text("실행 설정", 18));
         CheckBox autoStart = new CheckBox(this);
@@ -194,6 +196,14 @@ public final class MainActivity extends Activity {
         autoReconnect.setOnCheckedChangeListener((v, enabled) ->
                 store.prefs().edit().putBoolean("autoReconnect", enabled).apply());
         root.addView(autoReconnect);
+        root.addView(text("연결 중에는 화면을 닫아도 알림과 함께 백그라운드에서 동작합니다. "
+                + "장시간 사용하려면 Android 앱 정보에서 배터리 사용을 '제한 없음'으로 설정하세요. "
+                + "기기 절전 정책에 따라 중단될 수 있습니다.", 12));
+        root.addView(button("앱 정보 열기 (배터리 설정)", v -> {
+            Intent settings = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(settings);
+        }));
 
         root.addView(text("설정 백업 및 복원", 18));
         root.addView(text("WireGuard 개인키가 포함되므로 백업 파일을 암호화합니다. 암호를 잃어버리면 복원할 수 없습니다.", 12));
@@ -204,7 +214,7 @@ public final class MainActivity extends Activity {
                 new LinearLayout.LayoutParams(0, dp(52), 1));
         root.addView(backupActions);
 
-        root.addView(text("실행 로그 (비밀키 기록 안 함)", 18));
+        root.addView(text("실행 로그 (최대 64KB · 비밀키 기록 안 함)", 18));
         LinearLayout logActions = row();
         logActions.addView(button("새로고침", v -> showLogs()), new LinearLayout.LayoutParams(0, dp(50), 1));
         logActions.addView(button("복사", v -> {
@@ -216,9 +226,19 @@ public final class MainActivity extends Activity {
         logs = text("", 12);
         logs.setTextIsSelectable(true);
         root.addView(logs);
-        root.addView(text("Autosync 주소에는 http://127.0.0.1:로컬포트/실제WebDAV경로를 입력합니다. "
-                + "HTTP→HTTPS 모드는 NPM 인증서의 도메인을 검증하고 WireGuard 내부에서 HTTPS로 접속합니다. "
-                + "스마트폰과 이 앱 사이의 127.0.0.1 HTTP 구간은 암호화되지 않습니다.", 12));
+        root.addView(text("작동 방식", 18));
+        root.addView(text("① WireGuard 프로필을 등록한 후 연결합니다. "
+                + "이 앱은 Android의 VPN 권한을 사용하지 않고 독립적인 터널을 생성합니다.", 12));
+        root.addView(text("② 포워딩 규칙에서 로컬 포트와 원격 서버의 IP·포트를 지정합니다. "
+                + "다른 앱은 127.0.0.1:로컬포트에 접속하면 됩니다. "
+                + "설정한 포트의 TCP 연결만 WireGuard로 전달하며 기기 전체 트래픽은 변경하지 않습니다.", 12));
+        root.addView(text("③ TCP 모드는 데이터를 변경하지 않고 전달합니다. "
+                + "HTTP→HTTPS 모드는 로컬 HTTP 요청을 원격 HTTPS 서버로 중계하고, "
+                + "설정한 도메인으로 TLS 인증서를 검증합니다. "
+                + "로컬 앱과 이 앱 사이의 HTTP 통신은 암호화되지 않습니다.", 12));
+        root.addView(text("④ '연결'은 로컬 포워딩이 시작되었다는 뜻입니다. "
+                + "원격 서버에 실제로 접속 가능한지는 각 규칙의 '연결 테스트'로 확인하세요. "
+                + "백그라운드에서 계속 사용하려면 연결을 유지하고, 중지하려면 '연결 종료'를 누르세요.", 12));
         showLogs();
     }
 
@@ -526,9 +546,9 @@ public final class MainActivity extends Activity {
         EditText remote = field(form, "서버 포트", old == null ? "" : "" + old.optInt("targetPort"), true);
         Spinner mode = new Spinner(this);
         mode.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
-                new String[]{"TCP 그대로 전달", "HTTP → HTTPS (NPM)"}));
+                new String[]{"TCP 그대로 전달", "HTTP → HTTPS"}));
         form.addView(mode);
-        EditText tlsHost = field(form, "NPM HTTPS 도메인 (예: dav.example.com)",
+        EditText tlsHost = field(form, "HTTPS 인증서 도메인 (예: service.example.com)",
                 old == null ? "" : old.optString("tlsHost"), false);
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
@@ -564,7 +584,7 @@ public final class MainActivity extends Activity {
                         String selectedMode = mode.getSelectedItemPosition() == 1 ? "http-https" : "tcp";
                         String domain = tlsHost.getText().toString().trim();
                         if ("http-https".equals(selectedMode) && !validTlsHost(domain)) {
-                            throw new IllegalArgumentException("NPM HTTPS 도메인을 확인하세요 (https:// 또는 포트 입력 금지).");
+                            throw new IllegalArgumentException("HTTPS 인증서 도메인을 확인하세요 (https:// 또는 포트 입력 금지).");
                         }
                         JSONObject updated = ProfileStore.rule(name.getText().toString().trim(),
                                 lp, ip, rp, enabled.isChecked(), selectedMode, domain);

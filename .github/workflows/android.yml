@@ -39,6 +39,8 @@ jobs:
         run: go test ./engine -v
       - name: Test encrypted backup format
         run: bash scripts/test-backup-codec.sh
+      - name: Test bounded logs
+        run: bash scripts/test-log-store.sh
       - name: Create Android AAR
         run: |
           mkdir -p app/libs

@@ -11,21 +11,26 @@ import java.util.Date;
 import java.util.Locale;
 
 final class LogStore {
-    private static final int LIMIT = 512 * 1024;
+    private static final int LIMIT = 32 * 1024; // current and previous files: <= 64 KiB total
     private LogStore() { }
 
     static synchronized void add(Context context, String message) {
         try {
             File current = new File(context.getFilesDir(), "forwarder.log");
             File previous = new File(context.getFilesDir(), "forwarder.old.log");
-            if (current.length() > LIMIT) {
-                if (previous.exists()) previous.delete();
-                current.renameTo(previous);
-            }
             String safe = message.replace('\r', ' ').replace('\n', ' ');
+            if (safe.length() > 500) safe = safe.substring(0, 500) + "…";
             String ts = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date());
+            byte[] line = (ts + "  " + safe + "\n").getBytes(StandardCharsets.UTF_8);
+            if (current.length() + line.length > LIMIT) {
+                if (previous.exists()) previous.delete();
+                if (!current.renameTo(previous)) {
+                    // If rotation fails, never allow an unbounded log file.
+                    try (FileOutputStream ignored = new FileOutputStream(current, false)) { }
+                }
+            }
             try (FileOutputStream out = new FileOutputStream(current, true)) {
-                out.write((ts + "  " + safe + "\n").getBytes(StandardCharsets.UTF_8));
+                out.write(line);
             }
         } catch (Exception ignored) { }
     }
