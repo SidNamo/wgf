@@ -193,13 +193,18 @@ final class ProfileStore {
     }
     void saveRules(JSONArray rules) { prefs.edit().putString("rules", rules.toString()).apply(); }
     static JSONObject rule(String name, int local, String targetHost, int targetPort, boolean enabled) {
-        return rule(name, local, targetHost, targetPort, enabled, "tcp", "");
+        return rule(name, "127.0.0.1", local, targetHost, targetPort, enabled, "tcp", "");
     }
     static JSONObject rule(String name, int local, String targetHost, int targetPort,
+                           boolean enabled, String mode, String tlsHost) {
+        return rule(name, "127.0.0.1", local, targetHost, targetPort, enabled, mode, tlsHost);
+    }
+    static JSONObject rule(String name, String localAddress, int local, String targetHost, int targetPort,
                            boolean enabled, String mode, String tlsHost) {
         JSONObject o = new JSONObject();
         try {
             o.put("name", name);
+            o.put("localAddress", localAddress);
             o.put("localPort", local);
             o.put("targetHost", targetHost);
             o.put("targetPort", targetPort);
@@ -265,7 +270,7 @@ final class ProfileStore {
             throw new IllegalArgumentException("잘못된 선택 프로필입니다.");
         }
         // Validate the entire backup before replacing any saved settings.
-        Set<Integer> ports = new HashSet<>();
+        Set<String> listeners = new HashSet<>();
         for (int i = 0; i < incoming.length(); i++) {
             JSONObject item = incoming.getJSONObject(i);
             validateConfig(item.getString("config"));
@@ -276,16 +281,20 @@ final class ProfileStore {
             int local = r.getInt("localPort");
             int target = r.getInt("targetPort");
             String host = r.getString("targetHost");
+            String localAddress = r.optString("localAddress", "127.0.0.1").trim();
+            if (localAddress.isEmpty()) localAddress = "127.0.0.1";
             String mode = r.optString("mode", "tcp");
             if ((local != 443 && (local < 1024 || local > 65535)) || target < 1 || target > 65535 || !validIPv4(host) ||
+                    !validLoopbackIPv4(localAddress) ||
                     (!"tcp".equals(mode) && !"http-https".equals(mode))) {
                 throw new IllegalArgumentException("백업에 잘못된 포워딩 규칙이 있습니다.");
             }
+            r.put("localAddress", localAddress);
             if ("http-https".equals(mode) && !validTLSHost(r.optString("tlsHost"))) {
                 throw new IllegalArgumentException("백업에 잘못된 HTTPS 도메인이 있습니다.");
             }
-            if (r.getBoolean("enabled") && !ports.add(local)) {
-                throw new IllegalArgumentException("백업에 중복 로컬 포트가 있습니다.");
+            if (r.getBoolean("enabled") && !listeners.add(localAddress + ":" + local)) {
+                throw new IllegalArgumentException("백업에 중복 로컬 IP/포트가 있습니다.");
             }
         }
         boolean autoStart = document.getBoolean("autoStart");
@@ -327,6 +336,19 @@ final class ProfileStore {
             for (String id : newIds) secretFile(id).delete();
             throw err;
         }
+    }
+
+    static boolean validLoopbackIPv4(String host) {
+        String[] parts = host.split("\\.", -1);
+        if (parts.length != 4 || !"127".equals(parts[0])) return false;
+        try {
+            for (String part : parts) {
+                if (!part.matches("[0-9]{1,3}")) return false;
+                int value = Integer.parseInt(part);
+                if (value < 0 || value > 255 || !part.equals(Integer.toString(value))) return false;
+            }
+            return true;
+        } catch (NumberFormatException bad) { return false; }
     }
 
     private static boolean validIPv4(String host) {

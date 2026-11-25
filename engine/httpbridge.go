@@ -29,7 +29,11 @@ func newHTTPBridge(
 ) (*http.Server, *http.Transport) {
 	destination := net.JoinHostPort(rule.TargetHost, strconv.Itoa(rule.TargetPort))
 	targetURL := &url.URL{Scheme: "https", Host: rule.TLSHost}
-	localAuthority := net.JoinHostPort("127.0.0.1", strconv.Itoa(rule.LocalPort))
+	localAddress := rule.LocalAddress
+	if localAddress == "" {
+		localAddress = "127.0.0.1" // backwards compatibility with existing rules
+	}
+	localAuthority := net.JoinHostPort(localAddress, strconv.Itoa(rule.LocalPort))
 
 	transport := &http.Transport{
 		Proxy: nil,

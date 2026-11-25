@@ -1,6 +1,10 @@
 package engine
 
-import "testing"
+import (
+	"net"
+	"strconv"
+	"testing"
+)
 
 func TestRulesValid(t *testing.T) {
 	rules, err := validateRules(`[{"name":"Cloudreve","localPort":5212,"targetHost":"192.168.0.230","targetPort":5212,"enabled":true}]`)
@@ -12,8 +16,58 @@ func TestRulesValid(t *testing.T) {
 func TestDuplicatePorts(t *testing.T) {
 	_, err := validateRules(`[{"localPort":5212,"targetHost":"192.168.0.230","targetPort":5212,"enabled":true},{"localPort":5212,"targetHost":"192.168.0.230","targetPort":2283,"enabled":true}]`)
 	if err == nil {
-		t.Fatal("expected duplicate port error")
+		t.Fatal("expected duplicate listener error")
 	}
+}
+
+func TestLocalAddressDefaultsToLoopback(t *testing.T) {
+	rules, err := validateRules(`[{"localPort":5212,"targetHost":"192.168.0.230","targetPort":5212,"enabled":true}]`)
+	if err != nil || len(rules) != 1 || rules[0].LocalAddress != "127.0.0.1" {
+		t.Fatalf("legacy rule should default to 127.0.0.1: %+v, %v", rules, err)
+	}
+}
+
+func TestSeparateLoopbackAddressesCanUseSamePort(t *testing.T) {
+	rules, err := validateRules(`[
+		{"localAddress":"127.0.0.1","localPort":443,"targetHost":"192.168.0.230","targetPort":443,"enabled":true},
+		{"localAddress":"127.0.0.2","localPort":443,"targetHost":"192.168.0.230","targetPort":443,"enabled":true}
+	]`)
+	if err != nil || len(rules) != 2 {
+		t.Fatalf("same port on different loopback addresses should be valid: %+v, %v", rules, err)
+	}
+}
+
+func TestSameLoopbackAddressAndPortIsDuplicate(t *testing.T) {
+	_, err := validateRules(`[
+		{"localAddress":"127.0.0.2","localPort":443,"targetHost":"192.168.0.230","targetPort":443,"enabled":true},
+		{"localAddress":"127.0.0.2","localPort":443,"targetHost":"192.168.0.230","targetPort":2283,"enabled":true}
+	]`)
+	if err == nil {
+		t.Fatal("expected duplicate address/port error")
+	}
+}
+
+func TestLocalBindAddressMustBeLoopback(t *testing.T) {
+	for _, address := range []string{"192.168.0.10", "0.0.0.0", "::1", "localhost", "127.0.0.1:443"} {
+		input := `[{"localAddress":"` + address + `","localPort":443,"targetHost":"192.168.0.230","targetPort":443,"enabled":true}]`
+		if _, err := validateRules(input); err == nil {
+			t.Errorf("non-loopback local address %q was accepted", address)
+		}
+	}
+}
+
+func TestLoopbackAddressesCanBindSamePort(t *testing.T) {
+	first, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	port := first.Addr().(*net.TCPAddr).Port
+	second, err := net.Listen("tcp", net.JoinHostPort("127.0.0.2", strconv.Itoa(port)))
+	if err != nil {
+		t.Fatalf("different loopback IP should bind the same port: %v", err)
+	}
+	defer second.Close()
 }
 
 // The unmodified TCP path also carries TLS ClientHello/SNI to the target.

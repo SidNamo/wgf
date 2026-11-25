@@ -39,7 +39,7 @@ func TestHTTPBridgeWebDAV(t *testing.T) {
 	defer backend.Close()
 	pool := x509.NewCertPool()
 	pool.AddCert(backend.Certificate())
-	rule := rule{Name: "dav", LocalPort: 5212, TargetHost: "192.168.0.230", TargetPort: 443, TLSHost: "example.com", Mode: "http-https", Enabled: true}
+	rule := rule{Name: "dav", LocalAddress: "127.0.0.2", LocalPort: 5212, TargetHost: "192.168.0.230", TargetPort: 443, TLSHost: "example.com", Mode: "http-https", Enabled: true}
 	var sent, received, active atomic.Int64
 	var errorMessage string
 	server, transport := newHTTPBridge(rule, func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -51,14 +51,14 @@ func TestHTTPBridgeWebDAV(t *testing.T) {
 	defer transport.CloseIdleConnections()
 	transport.TLSClientConfig.RootCAs = pool
 	client := httptest.NewRecorder()
-	req := httptest.NewRequest("MOVE", "http://127.0.0.1:5212/dav/demo.txt", strings.NewReader(body))
+	req := httptest.NewRequest("MOVE", "http://127.0.0.2:5212/dav/demo.txt", strings.NewReader(body))
 	req.Header.Set("Authorization", "Basic example")
-	req.Header.Set("Destination", "http://127.0.0.1:5212/dav/new.txt")
+	req.Header.Set("Destination", "http://127.0.0.2:5212/dav/new.txt")
 	server.Handler.ServeHTTP(client, req)
 	if client.Code != http.StatusMultiStatus {
 		t.Fatalf("upstream status=%d; error=%s", client.Code, errorMessage)
 	}
-	if got := client.Header().Get("Location"); got != "http://127.0.0.1:5212/dav/new.txt" {
+	if got := client.Header().Get("Location"); got != "http://127.0.0.2:5212/dav/new.txt" {
 		t.Errorf("redirect not localized: %s", got)
 	}
 	if got := client.Body.String(); got != "done" {

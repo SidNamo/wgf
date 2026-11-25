@@ -229,15 +229,15 @@ public final class MainActivity extends Activity {
         root.addView(text("작동 방식", 18));
         root.addView(text("① WireGuard 프로필을 등록한 후 연결합니다. "
                 + "이 앱은 Android의 VPN 권한을 사용하지 않고 독립적인 터널을 생성합니다.", 12));
-        root.addView(text("② 포워딩 규칙에서 로컬 포트와 원격 서버의 IP·포트를 지정합니다. "
-                + "다른 앱은 127.0.0.1:로컬포트에 접속하면 됩니다. "
+        root.addView(text("② 포워딩 규칙에서 로컬 IP·포트와 원격 서버의 IP·포트를 지정합니다. "
+                + "다른 앱은 규칙에 설정한 로컬 IP:포트로 접속하면 됩니다. "
                 + "설정한 포트의 TCP 연결만 WireGuard로 전달하며 기기 전체 트래픽은 변경하지 않습니다.", 12));
         root.addView(text("③ TCP 모드는 데이터를 변경하지 않고 전달합니다. "
                 + "HTTP→HTTPS 모드는 로컬 HTTP 요청을 원격 HTTPS 서버로 중계하고, "
                 + "설정한 도메인으로 TLS 인증서를 검증합니다. "
                 + "로컬 앱과 이 앱 사이의 HTTP 통신은 암호화되지 않습니다.", 12));
         root.addView(text("TCP 모드에서는 여러 HTTPS 도메인이 같은 서버 IP·포트를 사용해도 "
-                + "요청의 TLS SNI를 변경하지 않고 전달합니다. 도메인을 127.0.0.1로 해석하는 DNS 설정은 "
+                + "요청의 TLS SNI를 변경하지 않고 전달합니다. 도메인을 각 규칙의 로컬 IP로 해석하는 DNS 설정은 "
                 + "이 앱 외부에서 구성해야 하며, 로컬 443 포트 사용 가능 여부는 기기마다 다릅니다.", 12));
         root.addView(text("④ '연결'은 로컬 포워딩이 시작되었다는 뜻입니다. "
                 + "원격 서버에 실제로 접속 가능한지는 각 규칙의 '연결 테스트'로 확인하세요. "
@@ -516,12 +516,14 @@ public final class MainActivity extends Activity {
             top.addView(button("수정", v -> editRule(index)));
             top.addView(button("삭제", v -> deleteRule(index)));
             panel.addView(top);
-            panel.addView(text("127.0.0.1:" + rule.optInt("localPort") + " → "
+            String localAddress = rule.optString("localAddress", "127.0.0.1").trim();
+            if (localAddress.isEmpty()) localAddress = "127.0.0.1";
+            panel.addView(text(localAddress + ":" + rule.optInt("localPort") + " → "
                     + rule.optString("targetHost") + ":" + rule.optInt("targetPort"), 13));
             boolean bridge = "http-https".equals(rule.optString("mode", "tcp"));
             panel.addView(text(bridge ? "HTTP → HTTPS · 인증서 도메인: " + rule.optString("tlsHost")
                     : "TCP 그대로 전달", 12));
-            panel.addView(button("연결 테스트", v -> testRoute(rule.optInt("localPort"))));
+            panel.addView(button("연결 테스트", v -> testRoute(localAddress, rule.optInt("localPort"))));
             routesView.addView(panel);
             TextView space = text("", 4);
             routesView.addView(space);
@@ -544,6 +546,9 @@ public final class MainActivity extends Activity {
         LinearLayout form = column();
         form.setPadding(dp(18), 0, dp(18), 0);
         EditText name = field(form, "규칙 이름", old == null ? "" : old.optString("name"), false);
+        EditText localAddress = field(form, "로컬 IP (예: 127.0.0.1 또는 127.0.0.2)",
+                old == null ? "127.0.0.1" : old.optString("localAddress", "127.0.0.1"), false);
+        form.addView(text("프로필마다 다른 127.x.x.x 주소를 사용하면 동일한 포트를 별도로 열 수 있습니다. 외부 IP는 사용할 수 없습니다.", 12));
         EditText local = field(form, "로컬 포트", old == null ? "" : "" + old.optInt("localPort"), true);
         form.addView(text("443 포트는 기기 보안 정책에 따라 수신이 거부될 수 있습니다. "
                 + "수신 실패 시 8443 같은 포트를 사용하세요.", 12));
@@ -574,16 +579,23 @@ public final class MainActivity extends Activity {
                     try {
                         int lp = Integer.parseInt(local.getText().toString());
                         int rp = Integer.parseInt(remote.getText().toString());
+                        String bindAddress = localAddress.getText().toString().trim();
+                        if (bindAddress.isEmpty()) bindAddress = "127.0.0.1";
                         String ip = host.getText().toString().trim();
+                        if (!ProfileStore.validLoopbackIPv4(bindAddress)) {
+                            throw new IllegalArgumentException("로컬 IP는 127.0.0.1~127.255.255.255 범위의 IPv4 주소여야 합니다.");
+                        }
                         if ((lp != 443 && (lp < 1024 || lp > 65535)) || rp < 1 || rp > 65535 || !validIpv4(ip)) {
-                            throw new IllegalArgumentException("포트 또는 IPv4 주소를 확인하세요.");
+                            throw new IllegalArgumentException("포트 또는 대상 IPv4 주소를 확인하세요.");
                         }
                         JSONArray rules = store.rules();
                         for (int i = 0; i < rules.length(); i++) {
-                            if (i != index && rules.optJSONObject(i) != null && enabled.isChecked()
-                                    && rules.optJSONObject(i).optBoolean("enabled", true)
-                                    && rules.optJSONObject(i).optInt("localPort") == lp) {
-                                throw new IllegalArgumentException("로컬 포트가 중복되었습니다.");
+                            JSONObject existing = rules.optJSONObject(i);
+                            if (i != index && existing != null && enabled.isChecked()
+                                    && existing.optBoolean("enabled", true)
+                                    && existing.optInt("localPort") == lp
+                                    && defaultLocalAddress(existing).equals(bindAddress)) {
+                                throw new IllegalArgumentException("동일한 로컬 IP와 포트가 이미 등록되어 있습니다.");
                             }
                         }
                         String selectedMode = mode.getSelectedItemPosition() == 1 ? "http-https" : "tcp";
@@ -592,14 +604,19 @@ public final class MainActivity extends Activity {
                             throw new IllegalArgumentException("HTTPS 인증서 도메인을 확인하세요 (https:// 또는 포트 입력 금지).");
                         }
                         JSONObject updated = ProfileStore.rule(name.getText().toString().trim(),
-                                lp, ip, rp, enabled.isChecked(), selectedMode, domain);
+                                bindAddress, lp, ip, rp, enabled.isChecked(), selectedMode, domain);
                         if (index < 0) rules.put(updated);
                         else rules.put(index, updated);
                         store.saveRules(rules);
                         renderRoutes();
-                        LogStore.add(this, "포트 규칙 저장: 127.0.0.1:" + lp + " -> " + ip + ":" + rp);
+                        LogStore.add(this, "포트 규칙 저장: " + bindAddress + ":" + lp + " -> " + ip + ":" + rp);
                     } catch (Exception e) { error(e.getMessage()); }
                 }).show();
+    }
+
+    private static String defaultLocalAddress(JSONObject rule) {
+        String address = rule.optString("localAddress", "127.0.0.1").trim();
+        return address.isEmpty() ? "127.0.0.1" : address;
     }
 
     private static boolean validIpv4(String host) {
@@ -646,26 +663,27 @@ public final class MainActivity extends Activity {
         } catch (Exception e) { error("서비스 실행 실패: " + e.getClass().getSimpleName()); }
     }
 
-    private void testRoute(int port) {
+    private void testRoute(String localAddress, int port) {
         if (!running()) { toast("먼저 연결을 시작하세요."); return; }
         status.setText("TCP 연결 테스트 진행 중...");
         new Thread(() -> {
             String result;
             try {
-                Engine.probe(port);
+                Engine.probeAt(localAddress, port);
                 boolean https = false;
                 JSONArray rules = store.rules();
                 for (int i = 0; i < rules.length(); i++) {
                     JSONObject rule = rules.optJSONObject(i);
-                    if (rule != null && rule.optInt("localPort") == port) {
+                    if (rule != null && rule.optInt("localPort") == port
+                            && defaultLocalAddress(rule).equals(localAddress)) {
                         https = "http-https".equals(rule.optString("mode", "tcp"));
                         break;
                     }
                 }
                 result = (https ? "HTTPS TLS 인증서 검증 성공" : "TCP 연결 성공")
-                        + " (WireGuard 경유, 로컬 포트 " + port + ")";
+                        + " (WireGuard 경유, " + localAddress + ":" + port + ")";
             } catch (Exception e) {
-                result = "TCP " + port + " 연결 실패: " + e.getMessage();
+                result = "TCP " + localAddress + ":" + port + " 연결 실패: " + e.getMessage();
             }
             final String message = result;
             LogStore.add(this, message);
