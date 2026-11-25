@@ -33,6 +33,9 @@ type rule struct {
 	Enabled      bool   `json:"enabled"`
 	Mode         string `json:"mode"`    // tcp (default) or http-https
 	TLSHost      string `json:"tlsHost"` // verified HTTPS name, not a URL
+	// AllowedDomains limits a TCP rule to these names (exact or "*.domain"), checked
+	// against the TLS SNI or HTTP Host header. Empty means every connection is forwarded.
+	AllowedDomains []string `json:"allowedDomains"`
 }
 
 var dnsName = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -124,6 +127,14 @@ func validateRules(raw string) ([]rule, error) {
 				return nil, fmt.Errorf("HTTPS domain must be a valid DNS name in rule %q", r.Name)
 			}
 		}
+		domains, err := normalizeDomainPatterns(r.AllowedDomains)
+		if err != nil {
+			return nil, fmt.Errorf("invalid allowed domain in rule %q: %w", r.Name, err)
+		}
+		if r.Mode == "http-https" && len(domains) > 0 {
+			return nil, fmt.Errorf("allowed domains apply only to TCP rules, not HTTP -> HTTPS (rule %q)", r.Name)
+		}
+		r.AllowedDomains = domains
 		key := listenerKey(r.LocalAddress, r.LocalPort)
 		if seen[key] {
 			return nil, fmt.Errorf("duplicate local listener: %s", key)
@@ -217,6 +228,22 @@ func (s *session) accept(listener net.Listener, r rule) {
 }
 
 func (s *session) forward(client net.Conn, r rule) {
+	// With an allow list, read the requested host first and only open the tunnel
+	// connection for an allowed name. The bytes read are replayed unchanged.
+	var preface []byte
+	if len(r.AllowedDomains) > 0 {
+		host, consumed, err := sniffHost(client, sniffTimeout)
+		if err != nil || !domainAllowed(host, r.AllowedDomains) {
+			if host == "" {
+				s.setError(fmt.Sprintf("%s: blocked a connection with no domain name: %v", r.Name, err))
+			} else {
+				s.setError(fmt.Sprintf("%s: blocked %s (not in allowed domains)", r.Name, host))
+			}
+			_ = client.Close()
+			return
+		}
+		preface = consumed
+	}
 	target := net.JoinHostPort(r.TargetHost, fmt.Sprintf("%d", r.TargetPort))
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	upstream, err := s.tunnel.Tnet.DialContext(ctx, "tcp", target)
@@ -225,6 +252,16 @@ func (s *session) forward(client net.Conn, r rule) {
 		s.setError(fmt.Sprintf("%s (%s): %v", r.Name, target, err))
 		_ = client.Close()
 		return
+	}
+	if len(preface) > 0 {
+		n, err := upstream.Write(preface)
+		s.tx.Add(int64(n))
+		if err != nil {
+			s.setError(fmt.Sprintf("%s (%s): %v", r.Name, target, err))
+			_ = upstream.Close()
+			_ = client.Close()
+			return
+		}
 	}
 	s.mu.Lock()
 	if s.closing {

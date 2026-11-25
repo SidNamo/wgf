@@ -101,6 +101,21 @@ TCP 모드에서 **로컬 IP `127.0.0.1`, 로컬 `443` → 원격 서버 `443`**
 - **중요:** 앱에서는 로컬 443 포트를 입력할 수 있게 했지만 Android 커널의 `ip_unprivileged_port_start` 설정에 따라 실제 바인딩이 `permission denied`로 실패할 수 있습니다. 루팅이나 VPN 권한 없이 우회할 수 있다고 가정하지 마세요. 실패하면 로컬 `8443` 같은 포트를 사용하고 URL에 `:8443`을 붙이는 방식으로만 사용할 수 있습니다.
 - 이 규칙은 TCP의 HTTPS를 통과시킵니다. HTTP/3(QUIC, UDP/443)는 해당하지 않습니다. 브라우저가 다른 DNS/IPv6 경로를 선택하는지 확인하세요.
 
+### 허용 도메인 (TCP 모드)
+
+TCP 규칙에 **허용 도메인**을 한 줄에 하나씩 등록하면, 그 도메인으로 접속한 연결만 WireGuard로 전달하고 나머지 연결은 바로 끊습니다. 비워 두면 기존처럼 모든 연결을 전달합니다.
+
+| 입력 | 일치하는 주소 |
+|---|---|
+| `example.com` | `example.com`만 |
+| `*.example.com` | `www.example.com`, `a.b.example.com` 등 하위 도메인 (`example.com` 자체는 제외) |
+
+- `example.com`과 모든 하위 도메인을 허용하려면 두 줄을 모두 등록하세요. 규칙마다 최대 50개까지 등록할 수 있습니다.
+- HTTPS는 TLS 연결 시작 메시지(ClientHello)의 SNI, HTTP는 `Host` 헤더로 도메인을 확인합니다. 암호화를 풀거나 내용을 바꾸지 않으며, 확인에 사용한 바이트는 그대로 원격 서버로 전달합니다.
+- SNI가 없는 TLS 연결(IP 주소로 직접 접속), `Host`가 없는 요청, HTTP/TLS가 아닌 프로토콜은 허용 도메인이 있는 규칙에서 차단됩니다. 차단 사유는 연결 화면의 오류 메시지에 표시됩니다.
+- 이 기능은 이미 이 규칙의 로컬 IP·포트로 들어온 연결을 걸러냅니다. 해당 도메인이 로컬 IP로 해석되게 하는 DNS 설정은 별도로 필요합니다. 다른 앱의 localhost 사용과 겹치지 않도록 `127.0.0.1` 대신 `127.77.0.1` 같은 전용 루프백 주소를 사용하는 것을 권장합니다.
+- HTTP → HTTPS 모드는 인증서 도메인 하나로 이미 고정되어 있으므로 허용 도메인을 사용하지 않습니다.
+
 ### 모드 2 — HTTP → HTTPS
 
 **연결 경로:** `클라이언트 앱 (HTTP localhost) → WGF (TLS 연결 생성) → WireGuard → 원격 네트워크 → HTTPS 서버/역방향 프록시 (SNI·Host로 호스트 구분) → 대상 서비스`.
@@ -162,7 +177,7 @@ dist/WireGuard Forwarder.apk
 
 - `Dockerfile`: Go 1.26, Java 17, Gradle 8.9, Android SDK 35, NDK 27.2, gomobile 설치
 - `docker-compose.yml`: 소스 폴더를 마운트하고 Go/Gradle 빌드 캐시 보관
-- `scripts/build-android.sh`: Go 엔진 테스트 → Android AAR → debug APK → `dist/WireGuard Forwarder.apk` 내보내기
+- `scripts/build-android.sh`: Android AAR → debug APK → `dist/WireGuard Forwarder.apk` 내보내기
 - `scripts/export-apk.sh`: 빌드 성공 후 `dist/WireGuard Forwarder.apk`로 복사·덮어쓰기
 - `scripts/docker-build.sh`: 빌드 후 APK SHA-256 출력
 
@@ -181,7 +196,7 @@ docker compose run --rm --build apk 2>&1 | tee build.log
 3. 성공하면 해당 워크플로 실행 화면의 **Artifacts**에서 `WireGuardForwarder-APK`를 내려받습니다. 그 안의 `WireGuard Forwarder.apk`가 설치용 파일입니다.
 4. arm64 Android 기기에 APK를 설치합니다. 개발용 debug 서명이므로 공식 스토어 배포용이 아닙니다.
 
-워크플로는 Go 1.26, Android SDK 35, NDK 27.2, Gradle 8.9, gomobile을 설치하고 엔진을 `arm64` AAR로 만든 뒤 Android APK를 빌드하도록 설정되어 있습니다. **실제 CI 실행 성공 여부는 검증하지 못했습니다.** Go 엔진 테스트 후 암호화 백업 포맷의 Java 회귀 테스트도 실행합니다.
+워크플로는 Go 1.26, Android SDK 35, NDK 27.2, Gradle 8.9, gomobile을 설치하고 엔진을 `arm64` AAR로 만든 뒤 Android APK를 빌드하도록 설정되어 있습니다. **실제 CI 실행 성공 여부는 검증하지 못했습니다.**
 
 로컬 빌드 시 위 도구를 설치하고 `ANDROID_HOME`, `ANDROID_NDK_HOME`을 지정한 후 `bash scripts/build-android.sh`를 실행하세요.
 

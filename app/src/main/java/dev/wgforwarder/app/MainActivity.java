@@ -521,8 +521,10 @@ public final class MainActivity extends Activity {
             panel.addView(text(localAddress + ":" + rule.optInt("localPort") + " → "
                     + rule.optString("targetHost") + ":" + rule.optInt("targetPort"), 13));
             boolean bridge = "http-https".equals(rule.optString("mode", "tcp"));
+            List<String> domains = allowedDomains(rule);
             panel.addView(text(bridge ? "HTTP → HTTPS · 인증서 도메인: " + rule.optString("tlsHost")
-                    : "TCP 그대로 전달", 12));
+                    : "TCP 그대로 전달 · " + (domains.isEmpty() ? "모든 연결 전달"
+                    : "허용 도메인: " + String.join(", ", domains)), 12));
             panel.addView(button("연결 테스트", v -> testRoute(localAddress, rule.optInt("localPort"))));
             routesView.addView(panel);
             TextView space = text("", 4);
@@ -560,20 +562,39 @@ public final class MainActivity extends Activity {
         form.addView(mode);
         EditText tlsHost = field(form, "HTTPS 인증서 도메인 (예: service.example.com)",
                 old == null ? "" : old.optString("tlsHost"), false);
+        TextView domainsHelp = text("허용 도메인 (선택): 한 줄에 하나씩 입력합니다. 이 도메인으로 접속한 연결만 "
+                + "WireGuard로 전달하고 나머지는 끊습니다. 비워 두면 모든 연결을 전달합니다. "
+                + "*.example.com은 하위 도메인만 포함하므로 example.com도 함께 적으세요.", 12);
+        form.addView(domainsHelp);
+        EditText domains = new EditText(this);
+        domains.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        domains.setMinLines(2);
+        domains.setMaxLines(8);
+        domains.setHint("example.com\n*.example.com");
+        domains.setText(old == null ? "" : String.join("\n", allowedDomains(old)));
+        form.addView(domains);
         mode.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override public void onItemSelected(AdapterView<?> parent, View view, int pos, long id) {
                 tlsHost.setVisibility(pos == 1 ? View.VISIBLE : View.GONE);
+                domainsHelp.setVisibility(pos == 0 ? View.VISIBLE : View.GONE);
+                domains.setVisibility(pos == 0 ? View.VISIBLE : View.GONE);
             }
             @Override public void onNothingSelected(AdapterView<?> parent) { }
         });
         mode.setSelection(old != null && "http-https".equals(old.optString("mode")) ? 1 : 0);
-        tlsHost.setVisibility(mode.getSelectedItemPosition() == 1 ? View.VISIBLE : View.GONE);
+        boolean bridgeMode = mode.getSelectedItemPosition() == 1;
+        tlsHost.setVisibility(bridgeMode ? View.VISIBLE : View.GONE);
+        domainsHelp.setVisibility(bridgeMode ? View.GONE : View.VISIBLE);
+        domains.setVisibility(bridgeMode ? View.GONE : View.VISIBLE);
         CheckBox enabled = new CheckBox(this);
         enabled.setText("사용");
         enabled.setChecked(old == null || old.optBoolean("enabled", true));
         form.addView(enabled);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(form);
         new AlertDialog.Builder(this).setTitle(index < 0 ? "포트 추가" : "포트 수정")
-                .setView(form)
+                .setView(scroll)
                 .setNegativeButton("취소", null)
                 .setPositiveButton("저장", (dialog, which) -> {
                     try {
@@ -603,15 +624,29 @@ public final class MainActivity extends Activity {
                         if ("http-https".equals(selectedMode) && !validTlsHost(domain)) {
                             throw new IllegalArgumentException("HTTPS 인증서 도메인을 확인하세요 (https:// 또는 포트 입력 금지).");
                         }
+                        List<String> allowed = "tcp".equals(selectedMode)
+                                ? DomainList.parse(domains.getText().toString()) : new ArrayList<>();
                         JSONObject updated = ProfileStore.rule(name.getText().toString().trim(),
-                                bindAddress, lp, ip, rp, enabled.isChecked(), selectedMode, domain);
+                                bindAddress, lp, ip, rp, enabled.isChecked(), selectedMode, domain, allowed);
                         if (index < 0) rules.put(updated);
                         else rules.put(index, updated);
                         store.saveRules(rules);
                         renderRoutes();
-                        LogStore.add(this, "포트 규칙 저장: " + bindAddress + ":" + lp + " -> " + ip + ":" + rp);
+                        LogStore.add(this, "포트 규칙 저장: " + bindAddress + ":" + lp + " -> " + ip + ":" + rp
+                                + (allowed.isEmpty() ? "" : " (허용 도메인 " + allowed.size() + "개)"));
                     } catch (Exception e) { error(e.getMessage()); }
                 }).show();
+    }
+
+    private static List<String> allowedDomains(JSONObject rule) {
+        List<String> out = new ArrayList<>();
+        JSONArray array = rule.optJSONArray("allowedDomains");
+        if (array == null) return out;
+        for (int i = 0; i < array.length(); i++) {
+            String domain = array.optString(i, "").trim();
+            if (!domain.isEmpty()) out.add(domain);
+        }
+        return out;
     }
 
     private static String defaultLocalAddress(JSONObject rule) {

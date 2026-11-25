@@ -201,6 +201,10 @@ final class ProfileStore {
     }
     static JSONObject rule(String name, String localAddress, int local, String targetHost, int targetPort,
                            boolean enabled, String mode, String tlsHost) {
+        return rule(name, localAddress, local, targetHost, targetPort, enabled, mode, tlsHost, new ArrayList<>());
+    }
+    static JSONObject rule(String name, String localAddress, int local, String targetHost, int targetPort,
+                           boolean enabled, String mode, String tlsHost, List<String> allowedDomains) {
         JSONObject o = new JSONObject();
         try {
             o.put("name", name);
@@ -211,6 +215,7 @@ final class ProfileStore {
             o.put("enabled", enabled);
             o.put("mode", mode);
             o.put("tlsHost", tlsHost);
+            o.put("allowedDomains", new JSONArray(allowedDomains));
         } catch (Exception ignored) { }
         return o;
     }
@@ -292,6 +297,19 @@ final class ProfileStore {
             r.put("localAddress", localAddress);
             if ("http-https".equals(mode) && !validTLSHost(r.optString("tlsHost"))) {
                 throw new IllegalArgumentException("백업에 잘못된 HTTPS 도메인이 있습니다.");
+            }
+            if (r.has("allowedDomains")) {
+                JSONArray domains = r.optJSONArray("allowedDomains");
+                if (domains == null || domains.length() > DomainList.MAX
+                        || ("http-https".equals(mode) && domains.length() > 0)) {
+                    throw new IllegalArgumentException("백업에 잘못된 허용 도메인 목록이 있습니다.");
+                }
+                for (int d = 0; d < domains.length(); d++) {
+                    Object item = domains.get(d);
+                    if (!(item instanceof String) || !DomainList.valid(DomainList.normalize((String) item))) {
+                        throw new IllegalArgumentException("백업에 잘못된 허용 도메인이 있습니다.");
+                    }
+                }
             }
             if (r.getBoolean("enabled") && !listeners.add(localAddress + ":" + local)) {
                 throw new IllegalArgumentException("백업에 중복 로컬 IP/포트가 있습니다.");
