@@ -516,8 +516,8 @@ public final class MainActivity extends Activity {
             top.addView(button("수정", v -> editRule(index)));
             top.addView(button("삭제", v -> deleteRule(index)));
             panel.addView(top);
-            String localAddress = rule.optString("localAddress", "127.0.0.1").trim();
-            if (localAddress.isEmpty()) localAddress = "127.0.0.1";
+            String rawLocalAddress = rule.optString("localAddress", "127.0.0.1").trim();
+            final String localAddress = rawLocalAddress.isEmpty() ? "127.0.0.1" : rawLocalAddress;
             panel.addView(text(localAddress + ":" + rule.optInt("localPort") + " → "
                     + rule.optString("targetHost") + ":" + rule.optInt("targetPort"), 13));
             boolean bridge = "http-https".equals(rule.optString("mode", "tcp"));

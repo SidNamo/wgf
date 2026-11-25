@@ -12,7 +12,7 @@ android {
         applicationId 'dev.wgforwarder.app'
         minSdk 26
         targetSdk 35
-        versionCode (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
+        versionCode = (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
         versionName '1.0.0'
     }
     compileOptions {
