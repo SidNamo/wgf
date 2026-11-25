@@ -1,0 +1,13 @@
+.git
+.gradle
+.idea
+dist
+**/build
+app/libs
+*.apk
+*.aab
+*.keystore
+*.jks
+*.conf
+!docs/example-no-secrets.conf
+*.zip

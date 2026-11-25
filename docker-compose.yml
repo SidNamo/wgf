@@ -1,0 +1,17 @@
+services:
+  apk:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /workspace
+    volumes:
+      - ./:/workspace
+      - gradle-cache:/root/.gradle
+      - go-module-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    command: ["bash", "scripts/docker-build.sh"]
+
+volumes:
+  gradle-cache:
+  go-module-cache:
+  go-build-cache:
