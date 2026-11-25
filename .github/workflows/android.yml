@@ -33,6 +33,8 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           go get -tool golang.org/x/mobile/cmd/gobind@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Resolve Go dependencies
+        run: go mod tidy
       - name: Test Go engine
         run: go test ./engine -v
       - name: Create Android AAR
