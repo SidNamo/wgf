@@ -140,3 +140,8 @@ SDK/Gradle 다운로드 및 Google Play Services, Android 기기 런타임 동�
 - [ ] Android APK 컴파일 — 미실행: Docker/Android SDK/Gradle 없음
 - [ ] 갤럭시 폴드7에서 두 프로필 WGF의 동일 포트 동시 바인딩 — 미검증
 - [ ] 프로필별 DNS가 각각 `127.0.0.1` 및 `127.0.0.2`를 반환하도록 Split DNS 설정 — 미구현/미검증
+
+## 업데이트 서명(추가 검증 항목)
+- 최신 소스에서 고정 서명키 GitHub Secrets 필요 여부: 정적 확인
+- GitHub Actions 실행 번호 기반 versionCode: 정적 확인
+- APK 실제 서명·재설치 없는 업데이트: **미검증** (동일 키로 2회 빌드 및 단말에서 adb install -r 확인 필요)

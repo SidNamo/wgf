@@ -201,3 +201,27 @@ docker compose run --rm --build apk 2>&1 | tee build.log
 - [Google Code Scanner](https://developers.google.com/ml-kit/vision/barcode-scanning/code-scanner) — QR 카메라 스캐너 (`play-services-code-scanner:16.1.0`)
 
 프로젝트의 Gradle / Go 모듈 의존성은 빌드 시 다운로드됩니다. 비밀키가 포함된 QR 이미지는 빌드 입력이나 ZIP에 포함하지 않았습니다.
+
+## GitHub Actions: 재설치 없이 업데이트하는 고정 서명
+
+GitHub Actions는 임시 실행 환경이므로, 기본 `assembleDebug` 서명키가 실행마다 달라질 수 있습니다. 이 프로젝트의 GitHub Actions 빌드는 **고정 서명키를 GitHub Secrets에서 반드시 읽도록** 설정되어 있으며, `versionCode`는 GitHub Actions 실행 번호로 지정합니다. 서명키가 없다면 작업을 실패시키고, 임시 키로 APK를 배포하지 않습니다.
+
+1. 안전한 PC에서 개인 서명키를 **한 번만 생성**합니다 (JDK `keytool` 필요). 예시 (`<안전한암호>`는 실제 강력한 암호로 변경):
+
+   ```bash
+   keytool -genkeypair -keystore wgf.jks -storetype PKCS12 -alias wgf -keyalg RSA -keysize 3072 -validity 10000 -dname "CN=WireGuard Forwarder,O=Personal,C=KR" -storepass '<안전한암호>' -keypass '<안전한암호>'
+   ```
+
+2. `wgf.jks` 파일을 Base64 문자열로 변환합니다.
+   - Linux: `base64 -w0 wgf.jks`
+   - PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path '.\wgf.jks')))`
+3. GitHub 저장소 → **Settings → Secrets and variables → Actions → New repository secret**에서 아래 네 가지를 등록합니다.
+   - `WGF_KEYSTORE_BASE64`: Base64로 인코딩한 `wgf.jks` 전체
+   - `WGF_KEYSTORE_PASSWORD`: 키스토어 암호
+   - `WGF_KEY_ALIAS`: 위 예시에서는 `wgf`
+   - `WGF_KEY_PASSWORD`: 개인키 암호 (예시에서는 키스토어 암호와 동일)
+4. 이후 동일한 GitHub 저장소의 Actions로 빌드한 APK끼리는 **동일한 서명키**로 업데이트할 수 있습니다. 절대로 키스토어·암호를 저장소에 커밋하지 마세요. 키스토어 원본도 안전한 장소에 백업하세요.
+
+**최초 전환 주의:** 이전에 GitHub Actions의 임시 Debug 키로 설치한 앱은 새로운 고정 서명키 APK로 *덮어쓰기 업데이트할 수 없습니다*. 기존 앱에서 설정을 백업한 후 제거하고 새 APK 설치 → 복원해야 합니다. 이후 고정 서명키로 빌드한 버전들은 재설치 없이 업데이트할 수 있습니다. 홈/보안폴더 모두 각각 백업하십시오.
+
+**로컬 Docker 빌드:** 위 설정은 GitHub Actions에 적용됩니다. 로컬에서 고정 서명키로 빌드하려면 동일한 4개 환경 변수(키스토어 경로 포함)를 컨테이너에 전달하고 실제 파일을 마운트하도록 추가 설정해야 합니다. 아무 설정 없이 Docker로 빌드한 APK는 기본 Debug 서명키를 사용하므로 CI APK의 업데이트로 사용하지 마세요.

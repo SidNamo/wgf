@@ -50,8 +50,31 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Restore persistent signing key
+        env:
+          WGF_KEYSTORE_BASE64: ${{ secrets.WGF_KEYSTORE_BASE64 }}
+          WGF_KEYSTORE_PASSWORD: ${{ secrets.WGF_KEYSTORE_PASSWORD }}
+          WGF_KEY_ALIAS: ${{ secrets.WGF_KEY_ALIAS }}
+          WGF_KEY_PASSWORD: ${{ secrets.WGF_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${WGF_KEYSTORE_BASE64:?Configure WGF_KEYSTORE_BASE64 in Actions secrets}"
+          : "${WGF_KEYSTORE_PASSWORD:?Configure WGF_KEYSTORE_PASSWORD in Actions secrets}"
+          : "${WGF_KEY_ALIAS:?Configure WGF_KEY_ALIAS in Actions secrets}"
+          : "${WGF_KEY_PASSWORD:?Configure WGF_KEY_PASSWORD in Actions secrets}"
+          mkdir -p "$RUNNER_TEMP/wgf-signing"
+          printf '%s' "$WGF_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/wgf-signing/key.jks"
+          keytool -list -keystore "$RUNNER_TEMP/wgf-signing/key.jks" -storepass "$WGF_KEYSTORE_PASSWORD" -alias "$WGF_KEY_ALIAS" >/dev/null
+          echo "WGF_KEYSTORE_PATH=$RUNNER_TEMP/wgf-signing/key.jks" >> "$GITHUB_ENV"
       - name: Compile APK
+        env:
+          WGF_KEYSTORE_PASSWORD: ${{ secrets.WGF_KEYSTORE_PASSWORD }}
+          WGF_KEY_ALIAS: ${{ secrets.WGF_KEY_ALIAS }}
+          WGF_KEY_PASSWORD: ${{ secrets.WGF_KEY_PASSWORD }}
         run: gradle --no-daemon :app:assembleDebug
+      - name: Verify APK signing
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk
       - name: Export named APK
         run: bash scripts/export-apk.sh
       - name: Upload installable APK
