@@ -4,12 +4,15 @@ package engine
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,7 +29,11 @@ type rule struct {
 	TargetHost string `json:"targetHost"`
 	TargetPort int    `json:"targetPort"`
 	Enabled    bool   `json:"enabled"`
+	Mode       string `json:"mode"`    // tcp (default) or http-https
+	TLSHost    string `json:"tlsHost"` // verified HTTPS name, not a URL
 }
+
+var dnsName = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 type counterWriter struct {
 	writer io.Writer
@@ -40,15 +47,18 @@ func (w counterWriter) Write(p []byte) (int, error) {
 }
 
 type session struct {
-	tunnel    *wireproxy.VirtualTun
-	listeners []net.Listener
-	rules     map[int]rule
-	mu        sync.Mutex
-	active    map[net.Conn]net.Conn
-	tx        atomic.Int64
-	rx        atomic.Int64
-	lastError string
-	closing   bool
+	tunnel         *wireproxy.VirtualTun
+	listeners      []net.Listener
+	httpServers    []*http.Server
+	httpTransports []*http.Transport
+	rules          map[int]rule
+	httpActive     atomic.Int64
+	mu             sync.Mutex
+	active         map[net.Conn]net.Conn
+	tx             atomic.Int64
+	rx             atomic.Int64
+	lastError      string
+	closing        bool
 }
 
 var state = struct {
@@ -93,6 +103,18 @@ func validateRules(raw string) ([]rule, error) {
 		ip, err := netip.ParseAddr(strings.TrimSpace(r.TargetHost))
 		if err != nil || !ip.Is4() || ip.IsLoopback() || ip.IsUnspecified() || ip.IsMulticast() {
 			return nil, fmt.Errorf("target must be an IPv4 address in rule %q", r.Name)
+		}
+		if r.Mode == "" {
+			r.Mode = "tcp" // backwards compatibility with existing rules
+		}
+		if r.Mode != "tcp" && r.Mode != "http-https" {
+			return nil, fmt.Errorf("invalid forwarding mode in rule %q", r.Name)
+		}
+		if r.Mode == "http-https" {
+			r.TLSHost = strings.TrimSpace(r.TLSHost)
+			if len(r.TLSHost) > 253 || !dnsName.MatchString(r.TLSHost) {
+				return nil, fmt.Errorf("HTTPS domain must be a valid DNS name in rule %q", r.Name)
+			}
 		}
 		if seen[r.LocalPort] {
 			return nil, fmt.Errorf("duplicate local port: %d", r.LocalPort)
@@ -141,7 +163,16 @@ func Start(configText, routesJSON string) error {
 	}
 	state.current = s
 	for i, l := range s.listeners {
-		go s.accept(l, rules[i])
+		r := rules[i]
+		if r.Mode == "http-https" {
+			server, transport := newHTTPBridge(r, s.tunnel.Tnet.DialContext,
+				&s.tx, &s.rx, &s.httpActive, s.setError)
+			s.httpServers = append(s.httpServers, server)
+			s.httpTransports = append(s.httpTransports, transport)
+			go func() { _ = server.Serve(l) }()
+		} else {
+			go s.accept(l, r)
+		}
 	}
 	return nil
 }
@@ -217,6 +248,12 @@ func (s *session) close() {
 		_ = upstream.Close()
 	}
 	s.mu.Unlock()
+	for _, server := range s.httpServers {
+		_ = server.Close()
+	}
+	for _, transport := range s.httpTransports {
+		transport.CloseIdleConnections()
+	}
 	for _, l := range s.listeners {
 		_ = l.Close()
 	}
@@ -255,6 +292,15 @@ func Probe(localPort int) error {
 	if err != nil {
 		return fmt.Errorf("TCP probe failed: %w", err)
 	}
+	if r.Mode == "http-https" {
+		// A TCP connection alone cannot confirm the server certificate or SNI.
+		tlsConn := tls.Client(c, &tls.Config{ServerName: r.TLSHost, MinVersion: tls.VersionTLS12})
+		defer tlsConn.Close()
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return fmt.Errorf("HTTPS certificate/handshake failed: %w", err)
+		}
+		return nil
+	}
 	return c.Close()
 }
 
@@ -267,7 +313,7 @@ func Stats() string {
 		return `{"running":false,"tx":0,"rx":0,"active":0,"error":""}`
 	}
 	s.mu.Lock()
-	active := len(s.active)
+	active := len(s.active) + int(s.httpActive.Load())
 	last := s.lastError
 	s.mu.Unlock()
 	doc := struct {

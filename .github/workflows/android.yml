@@ -48,9 +48,11 @@ jobs:
           gradle-version: '8.9'
       - name: Compile APK
         run: gradle --no-daemon :app:assembleDebug
+      - name: Export named APK
+        run: bash scripts/export-apk.sh
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: WireGuardForwarder-debug-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: WireGuardForwarder-APK
+          path: dist/WireGuard Forwarder.apk
           if-no-files-found: error

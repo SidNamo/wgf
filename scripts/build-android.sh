@@ -18,4 +18,4 @@ mkdir -p app/libs
 gomobile init
 gomobile bind -target=android/arm64 -androidapi=26 -o app/libs/engine.aar ./engine
 gradle --no-daemon :app:assembleDebug
-echo 'APK: app/build/outputs/apk/debug/app-debug.apk'
+bash scripts/export-apk.sh

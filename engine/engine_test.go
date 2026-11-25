@@ -36,3 +36,25 @@ func TestInvalidWireguardConfig(t *testing.T) {
 		t.Fatal("invalid config should be rejected")
 	}
 }
+
+func TestForwardModes(t *testing.T) {
+	rules, err := validateRules(`[
+		{"name":"Existing TCP","localPort":5212,"targetHost":"192.168.0.230","targetPort":5212,"enabled":true},
+		{"name":"NPM HTTPS","localPort":5213,"targetHost":"192.168.0.230","targetPort":443,"enabled":true,"mode":"http-https","tlsHost":"dav.example.com"}
+	]`)
+	if err != nil || len(rules) != 2 {
+		t.Fatalf("both forwarding modes should work together: %v", err)
+	}
+	if rules[0].Mode != "tcp" || rules[1].Mode != "http-https" {
+		t.Fatalf("TCP must remain the default: %+v", rules)
+	}
+}
+
+func TestHTTPSRuleRequiresDomain(t *testing.T) {
+	for _, host := range []string{"", "https://dav.example.com", "127.0.0.1", "dav.example.com:443"} {
+		input := `[{"localPort":5213,"targetHost":"192.168.0.230","targetPort":443,"enabled":true,"mode":"http-https","tlsHost":"` + host + `"}]`
+		if _, err := validateRules(input); err == nil {
+			t.Errorf("invalid HTTPS host %q was accepted", host)
+		}
+	}
+}

@@ -29,12 +29,6 @@ final class ProfileStore {
     ProfileStore(Context context) {
         this.context = context.getApplicationContext();
         prefs = this.context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        if (!prefs.contains("rules")) {
-            JSONArray initial = new JSONArray();
-            initial.put(rule("Cloudreve", 5212, "192.168.0.230", 5212, true));
-            initial.put(rule("Immich", 2283, "192.168.0.230", 2283, true));
-            prefs.edit().putString("rules", initial.toString()).apply();
-        }
     }
 
     SharedPreferences prefs() { return prefs; }
@@ -204,6 +198,10 @@ final class ProfileStore {
     }
     void saveRules(JSONArray rules) { prefs.edit().putString("rules", rules.toString()).apply(); }
     static JSONObject rule(String name, int local, String targetHost, int targetPort, boolean enabled) {
+        return rule(name, local, targetHost, targetPort, enabled, "tcp", "");
+    }
+    static JSONObject rule(String name, int local, String targetHost, int targetPort,
+                           boolean enabled, String mode, String tlsHost) {
         JSONObject o = new JSONObject();
         try {
             o.put("name", name);
@@ -211,6 +209,8 @@ final class ProfileStore {
             o.put("targetHost", targetHost);
             o.put("targetPort", targetPort);
             o.put("enabled", enabled);
+            o.put("mode", mode);
+            o.put("tlsHost", tlsHost);
         } catch (Exception ignored) { }
         return o;
     }

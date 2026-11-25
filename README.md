@@ -4,6 +4,10 @@
 
 > **개발 상태 (2026-11-25):** Docker Compose 로컬 빌드 구성을 추가했습니다. 이 실행 환경에는 Docker/Android SDK/Gradle 및 필요한 패키지 다운로드 접근이 없어 **실제 APK 빌드·설치·실기기 테스트는 미완료**입니다. 빌드 성공이나 앱 동작이 보장된 결과물은 아닙니다.
 
+## 앱 아이콘
+
+WireGuard의 짙은 적색(#88171A)과 유니콘 Pro의 코랄 레드 계열을 조합한 독립적인 WGF 보안 터널 아이콘을 포함했습니다. (두 서비스의 공식 로고를 사용한 것은 아닙니다.) 일반 및 원형 런처 아이콘과 Android 8.0 이상 Adaptive Icon을 지원합니다. `app/src/main/AndroidManifest.xml`의 `android:icon` 및 `android:roundIcon`에 연결되어 있으며, `app/src/main/res/mipmap-*`의 PNG와 `mipmap-anydpi-v26`의 XML에서 관리합니다. 애플리케이션 네트워크 기능은 변경하지 않았습니다.
+
 ## 기능
 
 - `.conf` 파일 가져오기
@@ -12,7 +16,8 @@
 - 여러 WireGuard 프로필 저장 및 선택
 - Android Keystore AES-256-GCM으로 개인키가 포함된 설정 파일 암호화 저장 (백업 제외)
 - `127.0.0.1:<포트>` → `<집 PC IPv4>:<포트>` TCP 포워딩 여러 개
-- TCP 목적지 연결 테스트, 송수신 통계, 실행 로그
+- TCP 목적지 연결 테스트, **업로드/다운로드 현재 속도(B/s·KB/s·MB/s)**, 실행 로그
+- **규칙별 두 가지 모드:** 기본 TCP 포워딩 또는 `HTTP → HTTPS (NPM)` 전환
 - Foreground Service, 부팅 시 연결 시도, 기본 네트워크 변경 시 재연결 시도
 - 루팅과 `VpnService` 권한 불필요
 
@@ -46,20 +51,54 @@ PersistentKeepalive = 25
 - WireGuard UDP 포트와 Cloudreve의 TCP 5212 포트는 **서로 다른 역할**입니다.
 - ipTIME 공유기에서 WireGuard를 서비스한다면 Cloudreve 5212를 인터넷으로 포트 포워딩할 필요는 없습니다. 집 PC의 Docker Compose에 `5212:5212`를 게시하고, 로컬 방화벽에서 필요한 접근만 허용하세요.
 
-## TCP 포워딩 사용
+## 포워딩 규칙 설정
 
-기본 예시 규칙:
+신규 설치 시 **포워딩 규칙은 비어 있습니다**. `+ 추가`를 누르면 규칙 이름·로컬 포트·대상 IPv4·대상 포트는 모두 **빈칸**이며, 모드만 **TCP 그대로 전달**로 선택되어 있습니다. 기존에 저장한 규칙은 유지됩니다.
 
-| 이름 | Android 로컬 주소 | 집 PC 대상 |
-|---|---|---|
-| Cloudreve | `127.0.0.1:5212` | `192.168.0.230:5212` |
-| Immich | `127.0.0.1:2283` | `192.168.0.230:2283` |
+### 모드 1 — TCP 그대로 전달 (기본값)
 
-**연결** → 원하는 규칙의 **연결 테스트**가 성공하면 Chrome에서 `http://127.0.0.1:5212/`로 접속을 시험하세요.
+| 설정 | 값 (예시) |
+|---|---|
+| 규칙 이름 | Cloudreve |
+| 로컬 포트 | `5212` |
+| 대상 IPv4 | `192.168.0.230` |
+| 대상 포트 | `5212` |
+| 모드 | TCP 그대로 전달 |
 
-Autosync WebDAV 서버 주소는 `http://127.0.0.1:5212/<Cloudreve가 지정한 실제 WebDAV 경로>`로 입력하되, **Cloudreve에서 WebDAV를 사용하도록 설정**해야 합니다. `/dav` 경로는 보편적인 기본값이라고 보장할 수 없으므로 추측해서 입력하지 마세요. HTTPS-only 구성은 인증서 호스트명 검증 등의 추가 고려사항이 있습니다. 또한 Autosync가 localhost URL 및 평문 HTTP를 허용하는지 기기에서 확인해야 합니다.
+Autosync: `http://127.0.0.1:5212/<실제 WebDAV 경로>`
 
-**중요:** 여기서 포워딩은 TCP뿐입니다. 일반 앱의 전체 트래픽을 WireGuard로 강제 전송하는 VPN이 아니며, Android VPN 권한을 사용하지 않습니다.
+이 모드는 HTTP·HTTPS 등 **TCP 데이터를 변경하지 않고** WireGuard로 전달합니다. HTTPS 목적지에 HTTP 요청을 보내면 HTTPS로 자동 변환되지 않습니다.
+
+### 모드 2 — HTTP → HTTPS (NPM)
+
+**가능한 경로:** `Autosync (HTTP localhost) → WGF (TLS 연결 생성) → WireGuard → ipTIME → 집 PC NPM:443 (SNI/Host 이름으로 프록시 호스트 선택) → WebDAV`.
+
+| 설정 | 값 (예시) |
+|---|---|
+| 규칙 이름 | WebDAV HTTPS |
+| 로컬 포트 | `5213` |
+| 대상 IPv4 | `192.168.0.230` |
+| 대상 포트 | `443` |
+| 모드 | HTTP → HTTPS (NPM) |
+| NPM HTTPS 도메인 | `dav.example.com` |
+
+Autosync: `http://127.0.0.1:5213/<실제 WebDAV 경로>`
+
+이 모드는 **외부 DNS를 이용하지 않고** 내부 IP `192.168.0.230:443`으로 WireGuard TCP 접속합니다. TLS SNI 및 HTTP Host는 `dav.example.com`으로 설정하며, **Android가 신뢰하는 인증기관과 도메인 일치를 검증**합니다. 인증서를 신뢰하지 못하거나 이름이 맞지 않으면 연결을 거부합니다. NPM은 `dav.example.com`용 HTTPS 인증서와 프록시 호스트 설정을 가지고 있어야 합니다. `dav2.example.com`도 이용하려면 다른 로컬 포트(예: `5214`)에 HTTPS 규칙을 추가하세요.
+
+**안전성 구분:** Autosync에서 WGF까지의 `127.0.0.1` 구간은 HTTP 평문이며, WGF부터 NPM까지는 TLS + WireGuard입니다. HTTPS는 서버에서 NPM까지 전달되는 구간을 종단 간 보호하지만, NPM→컨테이너는 기존 NPM 백엔드 설정에 따릅니다. 공유기 포트포워딩이나 Cloudflare Tunnel이 필요하지 않으며, 외부 WireGuard UDP 서버 접속은 유지해야 합니다.
+
+**실제 운영 주의:** HTTP와 HTTPS 모드는 같은 로컬 포트를 공유할 수 없으므로 포트가 달라야 합니다. WebDAV MOVE/COPY의 `Destination` 헤더 및 HTTPS 응답의 리디렉션 주소는 로컬 주소로 변환합니다. 일부 WebDAV 서버의 쿠키, 절대 URL, 로그인 리디렉션 또는 대용량 전송 호환성은 실기기에서 검증해야 합니다. TLS 인증서 검증을 비활성화하지 않습니다.
+
+### 속도 표시
+
+연결 화면에는 누적 전송량 대신 **현재 업로드/다운로드 속도(B/s, KB/s, MB/s)** 를 표시합니다. 화면이 열려 있는 동안 약 1.5초마다 최근 바이트 증가량을 측정합니다. 화면을 다시 열면 이전 화면 중단 시간의 전송량을 섞지 않고 새 측정 구간을 시작합니다. 연결이 끊기면 수치는 초기화됩니다.
+
+## 연결 테스트
+
+**연결** → 원하는 규칙의 **연결 테스트**로 목적지에 실제 TCP 연결을 시도합니다. HTTPS 모드에서는 인증서/호스트 검증을 포함한 TLS 핸드셰이크까지 확인합니다. 테스트가 성공하면 Chrome에서 `http://127.0.0.1:<규칙 로컬 포트>/`로 접속하세요.
+
+Cloudreve WebDAV 경로는 Cloudreve 자체 설정에서 확인하세요. Autosync가 HTTP localhost 접속을 허용하는지도 별도 확인해야 합니다. **로컬 포트 포워딩은 TCP만 해당하며**, 일반 앱의 전체 트래픽을 WireGuard로 강제 전송하지 않습니다.
 
 ## 로컬 Docker Compose 빌드 (추천)
 
@@ -74,15 +113,16 @@ docker compose run --rm --build apk
 정상 빌드 후 생성 파일:
 
 ```text
-dist/WireGuardForwarder-debug.apk
+dist/WireGuard Forwarder.apk
 ```
 
-Windows PowerShell에서도 같은 명령어를 실행할 수 있습니다. Android 기기로 APK를 옮겨 직접 설치하면 됩니다. `arm64-v8a` 전용 debug APK이므로 갤럭시 Z Fold7에 맞지만 다른 CPU 구조를 가진 기기는 지원하지 않습니다. 정식 스토어 배포용 서명은 포함하지 않았습니다.
+기존 `dist/WireGuard Forwarder.apk`가 있으면 정상 빌드가 완료된 뒤 같은 이름으로 덮어씁니다. GitHub Actions도 동일한 파일명으로 내보냅니다. Windows PowerShell에서도 같은 명령어를 실행할 수 있습니다. Android 기기로 APK를 옮겨 직접 설치하면 됩니다. `arm64-v8a` 전용 debug APK이므로 갤럭시 Z Fold7에 맞지만 다른 CPU 구조를 가진 기기는 지원하지 않습니다. 정식 스토어 배포용 서명은 포함하지 않았습니다.
 
 - `Dockerfile`: Go 1.26, Java 17, Gradle 8.9, Android SDK 35, NDK 27.2, gomobile 설치
 - `docker-compose.yml`: 소스 폴더를 마운트하고 Go/Gradle 빌드 캐시 보관
-- `scripts/build-android.sh`: Go 엔진 테스트 → Android AAR → debug APK
-- `scripts/docker-build.sh`: 생성된 APK를 `dist/`에 복사하고 SHA-256 출력
+- `scripts/build-android.sh`: Go 엔진 테스트 → Android AAR → debug APK → `dist/WireGuard Forwarder.apk` 내보내기
+- `scripts/export-apk.sh`: 빌드 성공 후 `dist/WireGuard Forwarder.apk`로 복사·덮어쓰기
+- `scripts/docker-build.sh`: 빌드 후 APK SHA-256 출력
 
 처음 빌드는 다운로드 때문에 오래 걸릴 수 있습니다. 이후에는 이미지와 다운로드 캐시를 재사용합니다. Go 의존성 설치 시 `go.mod` 및 `go.sum`이 갱신될 수 있습니다. 빌드 실패 시 아래 로그를 그대로 확인하세요.
 
@@ -96,7 +136,7 @@ docker compose run --rm --build apk 2>&1 | tee build.log
 
 1. 이 ZIP의 프로젝트 **내용 전체**를 GitHub 저장소의 루트에 업로드하세요. (공개 저장소에 개인키나 실제 `.conf`를 올리지 마세요.)
 2. 저장소 → **Actions** → **Build Android APK** → **Run workflow**. 기본 브랜치가 `main`/`master`이면 push 시에도 빌드됩니다.
-3. 성공하면 해당 워크플로 실행 화면의 **Artifacts**에서 `WireGuardForwarder-debug-APK`를 내려받습니다. 그 안의 `app-debug.apk`가 설치용 파일입니다.
+3. 성공하면 해당 워크플로 실행 화면의 **Artifacts**에서 `WireGuardForwarder-APK`를 내려받습니다. 그 안의 `WireGuard Forwarder.apk`가 설치용 파일입니다.
 4. Galaxy Z Fold7에서 APK를 설치합니다. 개발용 debug 서명이므로 공식 스토어 배포용이 아닙니다.
 
 워크플로는 Go 1.26, Android SDK 35, NDK 27.2, Gradle 8.9, gomobile을 설치하고 엔진을 `arm64` AAR로 만든 뒤 Android APK를 빌드하도록 설정되어 있습니다. **실제 CI 실행 성공 여부는 검증하지 못했습니다.**
