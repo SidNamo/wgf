@@ -14,6 +14,7 @@ if ! grep -q 'golang.org/x/mobile/cmd/gobind' go.mod; then
 fi
 go mod tidy
 go test ./engine
+bash scripts/test-backup-codec.sh
 mkdir -p app/libs
 gomobile init
 gomobile bind -target=android/arm64 -androidapi=26 -o app/libs/engine.aar ./engine

@@ -89,3 +89,13 @@ SDK/Gradle 다운로드 및 Google Play Services, Android 기기 런타임 동�
 - [x] 런처 일반/원형/Adaptive 아이콘을 붉은색 계열로 교체하고 PNG 파일 검사
 - [x] 관련 스크립트 Bash 문법 및 ZIP 구성 검사
 - [ ] 실제 Gradle APK 컴파일 및 설치 미검증 (현 환경에 Android SDK/Gradle 없음)
+
+
+## 2026-11-25 수정: HTTPS 호스트 검증 및 설정 백업·복원
+
+- GitHub Actions 보고 오류: `TestHTTPSRuleRequiresDomain`에서 `127.0.0.1` 허용 → Go/Java 모두 숫자 IP 형태의 TLS 도메인을 거부하도록 수정.
+- GitHub Actions 보고 오류: `TestHTTPBridgeTLSVerification` 502 예상/200 반환 → HTTPS 업스트림 TLS의 인증서 호스트명 검증을 `VerifyConnection`에서 명시하고 미일치 인증서/신뢰되지 않는 인증서 거부 테스트를 강화.
+- **검증:** Go 1.23 오프라인 독립 테스트(원본 검증 함수 및 HTTP 브리지 코드 추출) 9개 통과. Android/Go 1.26 통합 테스트는 이 환경에서 재실행 불가.
+- **백업:** AES-256-GCM + PBKDF2-HMAC-SHA256(25만 회) 암호화; 비밀번호 필수; QR로 등록한 프로필·암호화된 원본 설정을 복원 가능한 휴대용 파일로 내보냄. 포워딩 규칙 및 옵션 포함.
+- **백업 포맷 테스트:** Java 17에서 정상 복호화, 다른 암호 거부, 변조 감지, 반복 암호화 시 서로 다른 결과 확인 통과 (`bash scripts/test-backup-codec.sh`).
+- **미검증:** Android SDK/Go 1.26과 앱 전체 컴파일, Galaxy Fold7 실기기에서 백업 UI 및 복원 경로, 실제 TLS 인증서 실서버 연결.

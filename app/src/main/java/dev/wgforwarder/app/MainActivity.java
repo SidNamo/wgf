@@ -35,6 +35,8 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.Arrays;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -43,6 +45,9 @@ import engine.Engine;
 
 public final class MainActivity extends Activity {
     private static final int PICK_CONFIG = 110;
+    private static final int OPEN_BACKUP = 111;
+    private static final int SAVE_BACKUP = 112;
+    private char[] pendingBackupPassword;
     private ProfileStore store;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private Spinner profiles;
@@ -190,6 +195,15 @@ public final class MainActivity extends Activity {
                 store.prefs().edit().putBoolean("autoReconnect", enabled).apply());
         root.addView(autoReconnect);
 
+        root.addView(text("설정 백업 및 복원", 18));
+        root.addView(text("WireGuard 개인키가 포함되므로 백업 파일을 암호화합니다. 암호를 잃어버리면 복원할 수 없습니다.", 12));
+        LinearLayout backupActions = row();
+        backupActions.addView(button("백업 내보내기", v -> startBackup()),
+                new LinearLayout.LayoutParams(0, dp(52), 1));
+        backupActions.addView(button("백업 복원", v -> pickBackup()),
+                new LinearLayout.LayoutParams(0, dp(52), 1));
+        root.addView(backupActions);
+
         root.addView(text("실행 로그 (비밀키 기록 안 함)", 18));
         LinearLayout logActions = row();
         logActions.addView(button("새로고침", v -> showLogs()), new LinearLayout.LayoutParams(0, dp(50), 1));
@@ -240,6 +254,34 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == SAVE_BACKUP) {
+            char[] password = pendingBackupPassword;
+            pendingBackupPassword = null;
+            if (password == null) return;
+            try {
+                if (result != RESULT_OK || data == null || data.getData() == null) return;
+                byte[] bytes = store.backup(password);
+                try (OutputStream out = getContentResolver().openOutputStream(data.getData(), "wt")) {
+                    if (out == null) throw new IllegalStateException("백업 파일을 만들 수 없습니다.");
+                    out.write(bytes);
+                    out.flush();
+                } finally { Arrays.fill(bytes, (byte) 0); }
+                LogStore.add(this, "암호화 설정 백업 완료");
+                toast("암호화 백업 파일을 저장했습니다.");
+            } catch (Exception error) {
+                error("백업 실패: " + error.getClass().getSimpleName());
+            } finally { Arrays.fill(password, '\0'); }
+            return;
+        }
+        if (request == OPEN_BACKUP) {
+            if (result != RESULT_OK || data == null || data.getData() == null) return;
+            try (InputStream in = getContentResolver().openInputStream(data.getData())) {
+                if (in == null) throw new IllegalStateException("백업 파일을 열 수 없습니다.");
+                byte[] bytes = readBackup(in);
+                showRestoreDialog(bytes);
+            } catch (Exception error) { error("백업 파일 읽기 실패: " + error.getClass().getSimpleName()); }
+            return;
+        }
         if (request != PICK_CONFIG || result != RESULT_OK || data == null || data.getData() == null) return;
         try (InputStream in = getContentResolver().openInputStream(data.getData());
              ByteArrayOutputStream out = new ByteArrayOutputStream()) {
@@ -253,6 +295,97 @@ public final class MainActivity extends Activity {
             String content = out.toString(StandardCharsets.UTF_8.name());
             showConfigEditor(false, content);
         } catch (Exception e) { error(e.getMessage()); }
+    }
+
+    private void startBackup() {
+        if (pendingBackupPassword != null) Arrays.fill(pendingBackupPassword, '\0');
+        pendingBackupPassword = null;
+        LinearLayout form = column();
+        form.setPadding(dp(18), 0, dp(18), 0);
+        EditText password = field(form, "백업 암호 (8자 이상)", "", false);
+        password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        EditText confirm = field(form, "백업 암호 확인", "", false);
+        confirm.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("암호화 설정 백업")
+                .setView(form)
+                .setNegativeButton("취소", null)
+                .setPositiveButton("파일 선택", null)
+                .create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(click -> {
+            char[] one = password.getText().toString().toCharArray();
+            char[] two = confirm.getText().toString().toCharArray();
+            try {
+                if (one.length < 8 || !Arrays.equals(one, two)) {
+                    error("암호는 8자 이상이며 확인 입력과 일치해야 합니다.");
+                    return;
+                }
+                pendingBackupPassword = one.clone();
+                Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                save.addCategory(Intent.CATEGORY_OPENABLE);
+                save.setType("application/octet-stream");
+                save.putExtra(Intent.EXTRA_TITLE, "WireGuardForwarder-backup.wgfb");
+                startActivityForResult(save, SAVE_BACKUP);
+                dialog.dismiss();
+            } catch (Exception error) { error("파일 선택 실패: " + error.getClass().getSimpleName()); }
+            finally { Arrays.fill(one, '\0'); Arrays.fill(two, '\0'); }
+        }));
+        dialog.show();
+        dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+    }
+
+    private void pickBackup() {
+        if (running()) { toast("설정을 복원하려면 연결을 먼저 종료하세요."); return; }
+        Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        pick.addCategory(Intent.CATEGORY_OPENABLE);
+        pick.setType("*/*");
+        startActivityForResult(pick, OPEN_BACKUP);
+    }
+
+    private static byte[] readBackup(InputStream in) throws Exception {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int length;
+            while ((length = in.read(buffer)) != -1) {
+                if (out.size() + length > BackupCodec.MAX_BACKUP_BYTES) {
+                    throw new IllegalArgumentException("백업 파일이 2MB를 초과했습니다.");
+                }
+                out.write(buffer, 0, length);
+            }
+            return out.toByteArray();
+        }
+    }
+
+    private void showRestoreDialog(byte[] backupData) {
+        if (running()) { toast("설정을 복원하려면 연결을 먼저 종료하세요."); return; }
+        LinearLayout form = column();
+        form.setPadding(dp(18), 0, dp(18), 0);
+        form.addView(text("현재 프로필과 포워딩 규칙을 백업 내용으로 교체합니다. 먼저 현재 설정을 백업하세요.", 13));
+        EditText password = field(form, "백업 암호", "", false);
+        password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("암호화 백업 복원")
+                .setView(form)
+                .setNegativeButton("취소", null)
+                .setPositiveButton("교체 복원", null)
+                .create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(click -> {
+            char[] pass = password.getText().toString().toCharArray();
+            try {
+                store.restore(backupData, pass);
+                LogStore.add(this, "설정 백업 복원 완료");
+                dialog.dismiss();
+                buildUi();
+                renderProfiles();
+                renderRoutes();
+                toast("설정을 복원했습니다. 연결은 수동으로 시작하세요.");
+            } catch (Exception error) {
+                error("복원 실패: " + error.getMessage());
+            } finally { Arrays.fill(pass, '\0'); }
+        }));
+        dialog.setOnDismissListener(v -> Arrays.fill(backupData, (byte) 0));
+        dialog.show();
+        dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
     }
 
     private void scanConfig() {
@@ -460,7 +593,7 @@ public final class MainActivity extends Activity {
     }
 
     private static boolean validTlsHost(String host) {
-        return host.length() <= 253 && host.matches("(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$");
+        return host.length() <= 253 && !host.matches("[0-9.]+") && host.matches("(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$");
     }
 
     private void deleteRule(int index) {

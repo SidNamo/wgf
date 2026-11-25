@@ -34,6 +34,7 @@ type rule struct {
 }
 
 var dnsName = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
+var numericAddress = regexp.MustCompile(`^[0-9.]+$`)
 
 type counterWriter struct {
 	writer io.Writer
@@ -112,7 +113,7 @@ func validateRules(raw string) ([]rule, error) {
 		}
 		if r.Mode == "http-https" {
 			r.TLSHost = strings.TrimSpace(r.TLSHost)
-			if len(r.TLSHost) > 253 || !dnsName.MatchString(r.TLSHost) {
+			if len(r.TLSHost) > 253 || !dnsName.MatchString(r.TLSHost) || numericAddress.MatchString(r.TLSHost) {
 				return nil, fmt.Errorf("HTTPS domain must be a valid DNS name in rule %q", r.Name)
 			}
 		}

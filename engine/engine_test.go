@@ -51,7 +51,7 @@ func TestForwardModes(t *testing.T) {
 }
 
 func TestHTTPSRuleRequiresDomain(t *testing.T) {
-	for _, host := range []string{"", "https://dav.example.com", "127.0.0.1", "dav.example.com:443"} {
+	for _, host := range []string{"", "https://dav.example.com", "127.0.0.1", "999.999.999.999", "dav.example.com:443"} {
 		input := `[{"localPort":5213,"targetHost":"192.168.0.230","targetPort":443,"enabled":true,"mode":"http-https","tlsHost":"` + host + `"}]`
 		if _, err := validateRules(input); err == nil {
 			t.Errorf("invalid HTTPS host %q was accepted", host)

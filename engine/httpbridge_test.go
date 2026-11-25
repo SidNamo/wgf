@@ -77,7 +77,7 @@ func TestHTTPBridgeTLSVerification(t *testing.T) {
 		_, _ = w.Write([]byte("should not be accepted"))
 	}))
 	defer backend.Close()
-	rule := rule{Name: "dav", LocalPort: 5212, TargetHost: "192.168.0.230", TargetPort: 443, TLSHost: "wrong.example.com", Mode: "http-https", Enabled: true}
+	rule := rule{Name: "dav", LocalPort: 5212, TargetHost: "192.168.0.230", TargetPort: 443, TLSHost: "totally-unrelated.invalid", Mode: "http-https", Enabled: true}
 	var tx, rx, active atomic.Int64
 	var errorText string
 	server, transport := newHTTPBridge(rule, func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -94,6 +94,30 @@ func TestHTTPBridgeTLSVerification(t *testing.T) {
 	}
 	if !strings.Contains(errorText, "certificate") {
 		t.Errorf("certificate failure not reported: %q", errorText)
+	}
+}
+
+func TestHTTPBridgeRejectsUntrustedCertificate(t *testing.T) {
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("should be rejected"))
+	}))
+	defer backend.Close()
+	rule := rule{Name: "dav", LocalPort: 5214, TargetHost: "192.168.0.230", TargetPort: 443,
+		TLSHost: "example.com", Mode: "http-https", Enabled: true}
+	var tx, rx, active atomic.Int64
+	var failure string
+	server, transport := newHTTPBridge(rule, func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", backend.Listener.Addr().String())
+	}, &tx, &rx, &active, func(message string) { failure = message })
+	defer transport.CloseIdleConnections()
+	// No test CA is trusted. A successful response would be a TLS bypass.
+	recorder := httptest.NewRecorder()
+	server.Handler.ServeHTTP(recorder, httptest.NewRequest("GET", "http://127.0.0.1:5214/dav/", nil))
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("untrusted certificate accepted: response=%d", recorder.Code)
+	}
+	if !strings.Contains(failure, "certificate") {
+		t.Fatalf("missing certificate error: %q", failure)
 	}
 }
 

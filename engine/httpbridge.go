@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -37,7 +38,18 @@ func newHTTPBridge(
 			defer cancel()
 			return dial(ctx, "tcp", destination)
 		},
-		TLSClientConfig:     &tls.Config{ServerName: rule.TLSHost, MinVersion: tls.VersionTLS12},
+		TLSClientConfig: &tls.Config{
+			ServerName: rule.TLSHost,
+			MinVersion: tls.VersionTLS12,
+			// Go verifies the certificate chain by default. Also require the
+			// certificate to match the configured NPM hostname explicitly.
+			VerifyConnection: func(cs tls.ConnectionState) error {
+				if len(cs.PeerCertificates) == 0 {
+					return errors.New("TLS peer certificate is missing")
+				}
+				return cs.PeerCertificates[0].VerifyHostname(rule.TLSHost)
+			},
+		},
 		TLSHandshakeTimeout: 12 * time.Second,
 		IdleConnTimeout:     90 * time.Second,
 		MaxIdleConnsPerHost: 8,
