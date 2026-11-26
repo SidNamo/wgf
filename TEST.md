@@ -145,3 +145,43 @@ SDK/Gradle 다운로드 및 Google Play Services, Android 기기 런타임 동�
 - 최신 소스에서 고정 서명키 GitHub Secrets 필요 여부: 정적 확인
 - GitHub Actions 실행 번호 기반 versionCode: 정적 확인
 - APK 실제 서명·재설치 없는 업데이트: **미검증** (동일 키로 2회 빌드 및 단말에서 adb install -r 확인 필요)
+
+## 여러 프로필 동시 연결 · 프로필별 포트 포워딩 · `[Peer]` 오류 수정 (2026-11-26)
+
+### 오류 원인 확인
+
+- [x] `Invalid [Peer] settings, keys, or endpoint`는 `wireproxy.ParsePeers` 실패 시 표시. 이 함수에서 실행 중에 결과가 바뀔 수 있는 것은 `Endpoint` 도메인 DNS 조회(`net.ResolveIPAddr`)뿐이며, 키·AllowedIPs·Keepalive 검사는 같은 설정에 대해 항상 같은 결과
+- [x] 이전 `ForwardService`는 네트워크 변경 2초 후 `Engine.stop()` → `Engine.start()`로 설정을 다시 파싱. DNS가 준비되지 않으면 위 메시지로 실패하고 `desiredRunning=false`로 연결을 영구 종료 → 수동 재연결 시에는 정상 (사용자 증상과 일치)
+
+### 구현 내용
+
+- [x] Go 엔진: 프로필 ID별 터널 맵 (`StartTunnel` / `StopTunnel` / `StopAll` / `IsRunning` / `Reconnect` / `ProbeTunnel` / `Stats` / `Retryable`). 프로필마다 별도 WireGuard 장치·UDP 소켓·netstack
+- [x] `Endpoint` DNS 조회를 `ParsePeers` 전에 분리, 실패 시 재시도 가능한 별도 오류(`endpoint DNS lookup failed for <host>`)
+- [x] 실행 중 프로필 재시작 시 새 설정의 DNS 조회가 끝난 뒤에만 기존 터널 교체 (DNS 실패 시 기존 터널 유지)
+- [x] 네트워크 변경 시 터널 재생성 대신 `Reconnect`: 도메인 재조회 → 주소 변경 시 UAPI `update_only` 갱신 → `BindUpdate` → keepalive. 기존 TCP 연결 유지
+- [x] 데이터 전송 중 핸드셰이크 135초 이상 실패 시 해당 피어의 Endpoint 도메인 자동 재조회 (유휴 시 DNS 조회 없음)
+- [x] 다른 실행 중 프로필과 로컬 IP:포트 또는 `ListenPort`가 겹치면 그 프로필 이름을 포함한 오류
+- [x] `Stats`에 프로필별 마지막 핸드셰이크 시각·서버 주소 추가 (UAPI 덤프의 개인키는 파싱에서 제외)
+- [x] Android: 규칙에 `profileId`, 연결 유지 대상 `activeProfiles`, 프로필별 오류. 기존 데이터 자동 이전 (schema 2)
+- [x] `ForwardService`: 프로필별 순차 작업 큐(프로필끼리는 병렬), DNS 실패 시 5초~5분 백오프 재시도, 네트워크 연결 시 즉시 재시도, 알림에 연결된 프로필 목록
+- [x] UI: 프로필 카드(연결/종료, 상태·핸드셰이크·속도, 수정/삭제, 포트 추가, 프로필별 규칙과 연결 테스트), 모두 연결 / 모두 연결 종료
+- [x] 백업 버전 2(규칙별 소속 프로필), 버전 1 백업 복원 호환
+
+### 수행한 테스트
+
+테스트 코드는 저장소 정책(f9b2091에서 테스트 코드 제거)에 따라 커밋하지 않고 임시 작업 폴더에서만 실행했습니다.
+
+- [x] **Go 엔진 테스트 7개 통과 (`go test -race`, Go 1.26.0, 실제 wireproxy/wireguard-go 의존성)** — 테스트 안에 사용자 공간 WireGuard 서버를 띄워 실제 핸드셰이크와 TCP 전달 확인:
+  1. 프로필 2개 동시 연결, 두 프로필의 `Address`가 같아도(10.9.0.2) 각각 자기 서버로 전달, 한 프로필 종료가 다른 프로필에 영향 없음
+  2. DNS 실패 → 재시도 가능 오류(호스트명 포함, `invalid [Peer]` 아님), DNS 실패 중 재시작·`Reconnect` 시도에도 기존 터널과 진행 중 TCP 연결 유지
+  3. 키 형식 오류·Endpoint 포트 누락·섹션 누락은 재시도 불가 오류, 오류 문자열에 개인키 미포함
+  4. 다른 프로필과 로컬 포트 충돌 시 상대 프로필 이름 포함 오류, 다른 루프백 주소(127.0.0.2)의 같은 포트는 허용
+  5. `Reconnect` 후 진행 중이던 TCP 연결 유지, 바뀐 서버 주소(DNS 응답 변경)로 Endpoint 갱신
+  6. Endpoint 선택(IPv4 우선, 기존 주소 유지, IPv4-mapped 해제), 잘못된 Endpoint 형식 거부
+  7. (타이머 단축 사본) 유휴 터널은 DNS 조회 없음, 서버가 사라진 뒤 전송 시도 시 Endpoint 재조회
+- [x] `go vet`, `gofmt` 통과. CI와 같은 `go get -tool gobind` + `go mod tidy` 이후 의존성 버전에서도 통과
+- [x] `gobind -lang=java`로 실제 `engine.Engine` Java 바인딩 생성 성공 (gomobile 바인딩 가능한 API 확인)
+- [x] **Java 전체 소스 컴파일 성공** (`javac --release 17 -Xlint:all`, Android 15 프레임워크 jar(Robolectric android-all) + 생성된 Engine 바인딩, 앱 코드 경고 0개). ML Kit QR 스캐너 클래스는 Google Maven 접근 불가로 컴파일용 스텁 사용
+- [x] **`ProfileStore` JVM 검증 22개 통과** (메모리 SharedPreferences, AndroidKeyStore 대체 프로바이더): 기존 데이터 이전(규칙 → 선택 프로필, 연결 상태 유지, 1회만 실행), 소속 없는 규칙의 새 프로필 편입, 프로필별 암호화 설정, 여러 프로필 동시 활성, 백업 v2 왕복, v1 백업 복원, 프로필 간 같은 포트 허용/한 프로필 내 중복 거부, 프로필 삭제 시 규칙·상태 정리
+- [ ] `gomobile bind` AAR / APK 빌드 — 미실행 (Android SDK/NDK 다운로드 호스트 접근 불가)
+- [ ] 실기기: 여러 프로필 동시 연결, 와이파이 ↔ LTE 전환 시 연결 유지, 장시간 실행 후 오류 재발 여부 — **미검증**

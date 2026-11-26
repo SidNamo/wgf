@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.util.UUID;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.HashSet;
 import java.util.Set;
@@ -25,18 +26,62 @@ import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
+/**
+ * Saved WireGuard profiles (configs encrypted with the Android Keystore), their port
+ * forwarding rules and which profiles should be running.
+ *
+ * Every rule belongs to one profile through its "profileId". Several profiles can be
+ * connected at once; the ids the user wants connected are kept in "activeProfiles" so
+ * the service can bring them back after a restart, a reboot or a network change.
+ */
 final class ProfileStore {
     static final String PREFS = "settings";
     private static final String KEY_ALIAS = "wireguard_config_key_v1";
+    private static final int SCHEMA = 2;
+    private static final int BACKUP_VERSION = 2;
+    /** Guards read-modify-write of preferences shared by the UI and service threads. */
+    private static final Object LOCK = new Object();
     private final Context context;
     private final SharedPreferences prefs;
 
     ProfileStore(Context context) {
         this.context = context.getApplicationContext();
         prefs = this.context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        migrate();
     }
 
     SharedPreferences prefs() { return prefs; }
+
+    /**
+     * Schema 1 had one selected profile, a single global rule list and a
+     * "desiredRunning" flag. Its rules now belong to the profile that was selected
+     * (or the first one), and a running profile stays running.
+     */
+    private void migrate() {
+        if (prefs.getInt("schema", 1) >= SCHEMA) return;
+        synchronized (LOCK) {
+            if (prefs.getInt("schema", 1) >= SCHEMA) return;
+            JSONArray list = profiles();
+            String selected = prefs.getString("selected", "");
+            if (!hasProfile(selected)) {
+                JSONObject first = list.optJSONObject(0);
+                selected = first == null ? "" : first.optString("id");
+            }
+            JSONArray rules = rules();
+            try {
+                for (int i = 0; i < rules.length(); i++) {
+                    JSONObject r = rules.optJSONObject(i);
+                    if (r != null && r.optString("profileId").isEmpty()) r.put("profileId", selected);
+                }
+            } catch (Exception ignored) { }
+            Set<String> active = new LinkedHashSet<>();
+            if (prefs.getBoolean("desiredRunning", false) && !selected.isEmpty()) active.add(selected);
+            prefs.edit().putString("rules", rules.toString())
+                    .putString("activeProfiles", new JSONArray(active).toString())
+                    .remove("desiredRunning").remove("lastError").remove("selected")
+                    .putInt("schema", SCHEMA).commit();
+        }
+    }
 
     private SecretKey key() throws Exception {
         KeyStore store = KeyStore.getInstance("AndroidKeyStore");
@@ -57,13 +102,24 @@ final class ProfileStore {
         return new File(context.getNoBackupFilesDir(), "profile_" + id + ".bin");
     }
 
+    // ----- profiles -----
+
     JSONArray profiles() {
         try { return new JSONArray(prefs.getString("profiles", "[]")); }
         catch (Exception e) { return new JSONArray(); }
     }
 
-    String selectedId() { return prefs.getString("selected", ""); }
-    void select(String id) { prefs.edit().putString("selected", id).apply(); }
+    List<String> profileIds() {
+        List<String> ids = new ArrayList<>();
+        JSONArray arr = profiles();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject entry = arr.optJSONObject(i);
+            if (entry != null && !entry.optString("id").isEmpty()) ids.add(entry.optString("id"));
+        }
+        return ids;
+    }
+
+    boolean hasProfile(String id) { return id != null && !id.isEmpty() && profileIds().contains(id); }
 
     String profileName(String id) {
         JSONArray arr = profiles();
@@ -135,78 +191,168 @@ final class ProfileStore {
         }
     }
 
-    void addProfile(String name, String text) throws Exception {
+    /** Saves a new profile and returns its id. Rules without a valid owner join it. */
+    String addProfile(String name, String text) throws Exception {
         validateConfig(text);
         String id = UUID.randomUUID().toString();
         encryptedWrite(id, text);
-        JSONArray arr = profiles();
-        JSONObject entry = new JSONObject();
-        entry.put("id", id);
-        entry.put("name", name.trim().isEmpty() ? "Home" : name.trim());
-        arr.put(entry);
-        prefs.edit().putString("profiles", arr.toString()).putString("selected", id).apply();
+        synchronized (LOCK) {
+            JSONArray arr = profiles();
+            Set<String> known = new HashSet<>(profileIds());
+            JSONObject entry = new JSONObject();
+            entry.put("id", id);
+            entry.put("name", name.trim().isEmpty() ? "Home" : name.trim());
+            arr.put(entry);
+            JSONArray rules = rules();
+            for (int i = 0; i < rules.length(); i++) {
+                JSONObject r = rules.optJSONObject(i);
+                if (r != null && !known.contains(r.optString("profileId"))) r.put("profileId", id);
+            }
+            prefs.edit().putString("profiles", arr.toString()).putString("rules", rules.toString()).apply();
+        }
+        return id;
     }
 
-    void updateSelected(String name, String text) throws Exception {
-        String id = selectedId();
-        if (id.isEmpty()) throw new IllegalStateException("수정할 프로필을 먼저 선택하세요.");
+    void updateProfile(String id, String name, String text) throws Exception {
+        if (!hasProfile(id)) throw new IllegalStateException("프로필 목록에서 선택한 항목을 찾지 못했습니다.");
         validateConfig(text);
         encryptedWrite(id, text);
-        JSONArray arr = profiles();
-        for (int i = 0; i < arr.length(); i++) {
-            JSONObject entry = arr.optJSONObject(i);
-            if (entry != null && id.equals(entry.optString("id"))) {
-                entry.put("name", name.trim().isEmpty() ? "Home" : name.trim());
-                prefs.edit().putString("profiles", arr.toString()).apply();
-                return;
+        synchronized (LOCK) {
+            JSONArray arr = profiles();
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject entry = arr.optJSONObject(i);
+                if (entry != null && id.equals(entry.optString("id"))) {
+                    entry.put("name", name.trim().isEmpty() ? "Home" : name.trim());
+                    prefs.edit().putString("profiles", arr.toString()).apply();
+                    return;
+                }
             }
         }
         throw new IllegalStateException("프로필 목록에서 선택한 항목을 찾지 못했습니다.");
     }
 
-    String configText() throws Exception {
-        String id = selectedId();
-        if (id.isEmpty()) throw new IllegalStateException("WireGuard 프로필을 가져오세요.");
+    String configText(String id) throws Exception {
+        if (!hasProfile(id)) throw new IllegalStateException("WireGuard 프로필을 찾지 못했습니다.");
         return decryptConfig(id);
     }
 
-    void deleteSelected() {
-        String id = selectedId();
-        if (id.isEmpty()) return;
-        JSONArray old = profiles();
-        JSONArray updated = new JSONArray();
-        for (int i = 0; i < old.length(); i++) {
-            JSONObject p = old.optJSONObject(i);
-            if (p != null && !id.equals(p.optString("id"))) updated.put(p);
-        }
+    /** Deletes the profile, its encrypted config and its forwarding rules. */
+    void deleteProfile(String id) {
+        if (!hasProfile(id)) return;
         if (secretFile(id).exists() && !secretFile(id).delete()) {
             // A failed deletion must not silently discard the profile entry.
             return;
         }
-        String next = updated.length() > 0 ? updated.optJSONObject(0).optString("id") : "";
-        prefs.edit().putString("profiles", updated.toString()).putString("selected", next).apply();
+        synchronized (LOCK) {
+            JSONArray old = profiles();
+            JSONArray updated = new JSONArray();
+            for (int i = 0; i < old.length(); i++) {
+                JSONObject p = old.optJSONObject(i);
+                if (p != null && !id.equals(p.optString("id"))) updated.put(p);
+            }
+            JSONArray oldRules = rules();
+            JSONArray keptRules = new JSONArray();
+            for (int i = 0; i < oldRules.length(); i++) {
+                JSONObject r = oldRules.optJSONObject(i);
+                if (r != null && !id.equals(r.optString("profileId"))) keptRules.put(r);
+            }
+            Set<String> active = activeProfiles();
+            active.remove(id);
+            JSONObject errors = errors();
+            errors.remove(id);
+            prefs.edit().putString("profiles", updated.toString())
+                    .putString("rules", keptRules.toString())
+                    .putString("activeProfiles", new JSONArray(active).toString())
+                    .putString("profileErrors", errors.toString())
+                    .apply();
+        }
     }
+
+    // ----- which profiles should run, and their last error -----
+
+    Set<String> activeProfiles() {
+        Set<String> out = new LinkedHashSet<>();
+        try {
+            JSONArray arr = new JSONArray(prefs.getString("activeProfiles", "[]"));
+            for (int i = 0; i < arr.length(); i++) {
+                String id = arr.optString(i, "");
+                if (!id.isEmpty()) out.add(id);
+            }
+        } catch (Exception ignored) { }
+        return out;
+    }
+
+    boolean isActive(String id) { return activeProfiles().contains(id); }
+
+    void setActive(String id, boolean active) {
+        synchronized (LOCK) {
+            Set<String> set = activeProfiles();
+            boolean changed = active ? set.add(id) : set.remove(id);
+            if (changed) prefs.edit().putString("activeProfiles", new JSONArray(set).toString()).commit();
+        }
+    }
+
+    private JSONObject errors() {
+        try { return new JSONObject(prefs.getString("profileErrors", "{}")); }
+        catch (Exception e) { return new JSONObject(); }
+    }
+
+    String profileError(String id) { return errors().optString(id, ""); }
+
+    /** Stores the last connection problem of a profile; null or empty clears it. */
+    void setProfileError(String id, String message) {
+        synchronized (LOCK) {
+            JSONObject errors = errors();
+            try {
+                if (message == null || message.isEmpty()) {
+                    if (!errors.has(id)) return;
+                    errors.remove(id);
+                } else {
+                    if (message.equals(errors.optString(id))) return;
+                    errors.put(id, message);
+                }
+            } catch (Exception ignored) { return; }
+            prefs.edit().putString("profileErrors", errors.toString()).apply();
+        }
+    }
+
+    // ----- forwarding rules -----
 
     JSONArray rules() {
         try { return new JSONArray(prefs.getString("rules", "[]")); }
         catch (Exception e) { return new JSONArray(); }
     }
-    void saveRules(JSONArray rules) { prefs.edit().putString("rules", rules.toString()).apply(); }
-    static JSONObject rule(String name, int local, String targetHost, int targetPort, boolean enabled) {
-        return rule(name, "127.0.0.1", local, targetHost, targetPort, enabled, "tcp", "");
+
+    /** Rules of one profile, in the format the engine expects. */
+    JSONArray rulesFor(String profileId) {
+        JSONArray all = rules();
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject r = all.optJSONObject(i);
+            if (r != null && profileId.equals(r.optString("profileId"))) out.put(r);
+        }
+        return out;
     }
-    static JSONObject rule(String name, int local, String targetHost, int targetPort,
-                           boolean enabled, String mode, String tlsHost) {
-        return rule(name, "127.0.0.1", local, targetHost, targetPort, enabled, mode, tlsHost);
+
+    int enabledRuleCount(String profileId) {
+        JSONArray own = rulesFor(profileId);
+        int count = 0;
+        for (int i = 0; i < own.length(); i++) {
+            JSONObject r = own.optJSONObject(i);
+            if (r != null && r.optBoolean("enabled", true)) count++;
+        }
+        return count;
     }
-    static JSONObject rule(String name, String localAddress, int local, String targetHost, int targetPort,
-                           boolean enabled, String mode, String tlsHost) {
-        return rule(name, localAddress, local, targetHost, targetPort, enabled, mode, tlsHost, new ArrayList<>());
+
+    void saveRules(JSONArray rules) {
+        synchronized (LOCK) { prefs.edit().putString("rules", rules.toString()).apply(); }
     }
-    static JSONObject rule(String name, String localAddress, int local, String targetHost, int targetPort,
-                           boolean enabled, String mode, String tlsHost, List<String> allowedDomains) {
+
+    static JSONObject rule(String profileId, String name, String localAddress, int local, String targetHost,
+                           int targetPort, boolean enabled, String mode, String tlsHost, List<String> allowedDomains) {
         JSONObject o = new JSONObject();
         try {
+            o.put("profileId", profileId);
             o.put("name", name);
             o.put("localAddress", localAddress);
             o.put("localPort", local);
@@ -220,26 +366,41 @@ final class ProfileStore {
         return o;
     }
 
+    static String localAddress(JSONObject rule) {
+        String address = rule.optString("localAddress", "127.0.0.1").trim();
+        return address.isEmpty() ? "127.0.0.1" : address;
+    }
+
+    // ----- backup -----
+
     // Explicit backup is portable across devices: it is encrypted with a user
     // passphrase rather than the non-exportable Android Keystore key.
     byte[] backup(char[] password) throws Exception {
         JSONObject document = new JSONObject();
-        document.put("version", 1);
+        document.put("version", BACKUP_VERSION);
         JSONArray saved = profiles();
         JSONArray exported = new JSONArray();
-        int selectedIndex = -1;
+        List<String> order = new ArrayList<>();
         for (int i = 0; i < saved.length(); i++) {
             JSONObject item = saved.getJSONObject(i);
             String id = item.getString("id");
-            if (id.equals(selectedId())) selectedIndex = i;
+            order.add(id);
             JSONObject entry = new JSONObject();
             entry.put("name", item.optString("name"));
             entry.put("config", decryptConfig(id));
             exported.put(entry);
         }
+        // Rules refer to their profile by position, since ids are device-local.
+        JSONArray rules = rules();
+        JSONArray exportedRules = new JSONArray();
+        for (int i = 0; i < rules.length(); i++) {
+            JSONObject r = new JSONObject(rules.getJSONObject(i).toString());
+            r.put("profile", order.indexOf(r.optString("profileId")));
+            r.remove("profileId");
+            exportedRules.put(r);
+        }
         document.put("profiles", exported);
-        document.put("selectedIndex", selectedIndex);
-        document.put("rules", rules());
+        document.put("rules", exportedRules);
         document.put("autoStart", prefs.getBoolean("autoStart", false));
         document.put("autoReconnect", prefs.getBoolean("autoReconnect", true));
         byte[] plaintext = document.toString().getBytes(StandardCharsets.UTF_8);
@@ -259,20 +420,27 @@ final class ProfileStore {
         return new String(cipher.doFinal(data), StandardCharsets.UTF_8);
     }
 
+    /** Replaces all profiles and rules. Accepts version 1 (single rule list) and 2 backups. */
     void restore(byte[] backup, char[] password) throws Exception {
         byte[] plaintext = BackupCodec.decrypt(backup, password);
         JSONObject document;
         try { document = new JSONObject(new String(plaintext, StandardCharsets.UTF_8)); }
         finally { Arrays.fill(plaintext, (byte) 0); }
-        if (document.getInt("version") != 1) throw new IllegalArgumentException("지원하지 않는 백업 버전입니다.");
+        int version = document.getInt("version");
+        if (version != 1 && version != BACKUP_VERSION) throw new IllegalArgumentException("지원하지 않는 백업 버전입니다.");
         JSONArray incoming = document.getJSONArray("profiles");
         JSONArray forwarding = document.getJSONArray("rules");
         if (incoming.length() > 50 || forwarding.length() > 100) {
             throw new IllegalArgumentException("백업 항목 수가 너무 많습니다.");
         }
-        int selectedIndex = document.getInt("selectedIndex");
-        if (selectedIndex < -1 || selectedIndex >= incoming.length()) {
-            throw new IllegalArgumentException("잘못된 선택 프로필입니다.");
+        // Version 1 rules all belonged to the selected profile.
+        int legacyOwner = -1;
+        if (version == 1) {
+            int selectedIndex = document.getInt("selectedIndex");
+            if (selectedIndex < -1 || selectedIndex >= incoming.length()) {
+                throw new IllegalArgumentException("잘못된 선택 프로필입니다.");
+            }
+            legacyOwner = selectedIndex >= 0 ? selectedIndex : (incoming.length() > 0 ? 0 : -1);
         }
         // Validate the entire backup before replacing any saved settings.
         Set<String> listeners = new HashSet<>();
@@ -281,8 +449,14 @@ final class ProfileStore {
             validateConfig(item.getString("config"));
             if (item.getString("name").length() > 200) throw new IllegalArgumentException("프로필 이름이 너무 깁니다.");
         }
+        int[] owners = new int[forwarding.length()];
         for (int i = 0; i < forwarding.length(); i++) {
             JSONObject r = forwarding.getJSONObject(i);
+            int owner = version == 1 ? legacyOwner : r.optInt("profile", -1);
+            if (owner < -1 || owner >= incoming.length()) {
+                throw new IllegalArgumentException("백업 규칙의 프로필 정보가 잘못되었습니다.");
+            }
+            owners[i] = owner;
             int local = r.getInt("localPort");
             int target = r.getInt("targetPort");
             String host = r.getString("targetHost");
@@ -311,8 +485,9 @@ final class ProfileStore {
                     }
                 }
             }
-            if (r.getBoolean("enabled") && !listeners.add(localAddress + ":" + local)) {
-                throw new IllegalArgumentException("백업에 중복 로컬 IP/포트가 있습니다.");
+            // Listeners only clash within one profile; different profiles may reuse them.
+            if (r.getBoolean("enabled") && !listeners.add(owner + "|" + localAddress + ":" + local)) {
+                throw new IllegalArgumentException("백업의 한 프로필에 중복 로컬 IP/포트가 있습니다.");
             }
         }
         boolean autoStart = document.getBoolean("autoStart");
@@ -332,17 +507,24 @@ final class ProfileStore {
                 entry.put("name", item.getString("name"));
                 newProfiles.put(entry);
             }
+            for (int i = 0; i < forwarding.length(); i++) {
+                JSONObject r = forwarding.getJSONObject(i);
+                r.remove("profile");
+                r.put("profileId", owners[i] < 0 ? "" : newIds.get(owners[i]));
+            }
             JSONArray previous = profiles();
-            String selected = selectedIndex < 0 ? "" : newIds.get(selectedIndex);
-            boolean success = prefs.edit()
-                    .putString("profiles", newProfiles.toString())
-                    .putString("selected", selected)
-                    .putString("rules", forwarding.toString())
-                    .putBoolean("autoStart", autoStart)
-                    .putBoolean("autoReconnect", autoReconnect)
-                    .putBoolean("desiredRunning", false)
-                    .remove("lastError")
-                    .commit();
+            boolean success;
+            synchronized (LOCK) {
+                success = prefs.edit()
+                        .putString("profiles", newProfiles.toString())
+                        .putString("rules", forwarding.toString())
+                        .putBoolean("autoStart", autoStart)
+                        .putBoolean("autoReconnect", autoReconnect)
+                        .putString("activeProfiles", "[]")
+                        .remove("profileErrors")
+                        .putInt("schema", SCHEMA)
+                        .commit();
+            }
             if (!success) throw new IllegalStateException("설정 저장에 실패했습니다.");
             for (int i = 0; i < previous.length(); i++) {
                 JSONObject old = previous.optJSONObject(i);

@@ -41,7 +41,10 @@ import java.io.OutputStream;
 import java.util.Arrays;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import engine.Engine;
 
@@ -52,16 +55,14 @@ public final class MainActivity extends Activity {
     private char[] pendingBackupPassword;
     private ProfileStore store;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private Spinner profiles;
-    private TextView status;
-    private TextView counters;
+    private LinearLayout profilesView;
+    private TextView summary;
     private TextView logs;
-    private LinearLayout routesView;
-    private Button connectButton;
-    private boolean renderingProfiles;
-    private long lastSampleAt;
-    private long lastTx;
-    private long lastRx;
+    // Per-profile views refreshed by the stats timer, and the last traffic sample
+    // of each running profile: {elapsedRealtime, tx, rx}.
+    private final Map<String, TextView> statusViews = new HashMap<>();
+    private final Map<String, Button> toggleButtons = new HashMap<>();
+    private final Map<String, long[]> samples = new HashMap<>();
 
     private final Runnable statsTick = new Runnable() {
         @Override public void run() {
@@ -80,13 +81,16 @@ public final class MainActivity extends Activity {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 100);
         }
         renderProfiles();
-        renderRoutes();
+        // Profiles left connected but not running (e.g. after an app update) come back.
+        for (String id : store.activeProfiles()) {
+            if (!running(id)) { sendToService(ForwardService.ENSURE, null); break; }
+        }
     }
 
     @Override protected void onResume() {
         super.onResume();
         // Do not average traffic over the time the screen was closed.
-        lastSampleAt = 0;
+        samples.clear();
         handler.removeCallbacks(statsTick);
         handler.post(statsTick);
     }
@@ -126,6 +130,8 @@ public final class MainActivity extends Activity {
         return r;
     }
 
+    private static LinearLayout.LayoutParams weight() { return new LinearLayout.LayoutParams(0, -2, 1); }
+
     private void buildUi() {
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = column();
@@ -136,67 +142,44 @@ public final class MainActivity extends Activity {
         TextView heading = text("WireGuard Forwarder", 23);
         heading.setTypeface(null, 1);
         root.addView(heading);
-        root.addView(text("다른 VPN과 병행 가능 · VpnService 미사용 · TCP / HTTP→HTTPS 중계", 12));
+        root.addView(text("다른 VPN과 병행 가능 · VpnService 미사용 · 여러 프로필 동시 연결 · TCP / HTTP→HTTPS 중계", 12));
 
         root.addView(text("WireGuard 프로필", 18));
-        profiles = new Spinner(this);
-        root.addView(profiles);
-        profiles.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (renderingProfiles || running()) return;
-                Object tag = profiles.getTag();
-                if (!(tag instanceof List)) return;
-                @SuppressWarnings("unchecked") List<String> ids = (List<String>) tag;
-                if (position >= 0 && position < ids.size()) store.select(ids.get(position));
-            }
-            @Override public void onNothingSelected(AdapterView<?> parent) { }
-        });
-        LinearLayout profileActions = row();
-        profileActions.addView(button("QR 스캔", v -> scanConfig()),
-                new LinearLayout.LayoutParams(0, dp(52), 1));
-        profileActions.addView(button(".conf 파일", v -> pickConfig()),
-                new LinearLayout.LayoutParams(0, dp(52), 1));
-        root.addView(profileActions);
-        LinearLayout editorActions = row();
-        editorActions.addView(button("직접 입력", v -> showConfigEditor(false, "")),
-                new LinearLayout.LayoutParams(0, dp(52), 1));
-        editorActions.addView(button("프로필 수정", v -> editProfile()),
-                new LinearLayout.LayoutParams(0, dp(52), 1));
-        editorActions.addView(button("삭제", v -> deleteProfile()),
-                new LinearLayout.LayoutParams(0, dp(52), 1));
-        root.addView(editorActions);
+        summary = text("", 13);
+        root.addView(summary);
+        LinearLayout addActions = row();
+        addActions.addView(button("QR 스캔", v -> scanConfig()), new LinearLayout.LayoutParams(0, dp(52), 1));
+        addActions.addView(button(".conf 파일", v -> pickConfig()), new LinearLayout.LayoutParams(0, dp(52), 1));
+        addActions.addView(button("직접 입력", v -> showConfigEditor(null, "")), new LinearLayout.LayoutParams(0, dp(52), 1));
+        root.addView(addActions);
 
-        root.addView(text("연결 상태", 18));
-        status = text("연결 안 됨", 15);
-        root.addView(status);
-        counters = text("", 13);
-        root.addView(counters);
-        connectButton = button("연결", v -> toggleConnection());
-        root.addView(connectButton);
-        root.addView(text("'연결'은 로컬 포트가 열린 상태입니다. 실제 WireGuard 경로는 아래 '연결 테스트'로 확인하세요.", 12));
+        profilesView = column();
+        root.addView(profilesView);
 
-        LinearLayout titleRow = row();
-        titleRow.addView(text("포트 포워딩", 18), new LinearLayout.LayoutParams(0, -2, 1));
-        titleRow.addView(button("+ 추가", v -> editRule(-1)));
-        root.addView(titleRow);
-        routesView = column();
-        root.addView(routesView);
-        root.addView(text("TCP: 데이터 변경 없이 중계 / HTTP→HTTPS: 로컬 HTTP를 원격 HTTPS로 변환", 12));
+        LinearLayout allActions = row();
+        allActions.addView(button("모두 연결", v -> connectAll()), new LinearLayout.LayoutParams(0, dp(52), 1));
+        allActions.addView(button("모두 연결 종료", v -> sendToService(ForwardService.STOP_ALL, null)),
+                new LinearLayout.LayoutParams(0, dp(52), 1));
+        root.addView(allActions);
+        root.addView(text("프로필마다 독립된 WireGuard 터널이 동시에 실행되며, 포트 포워딩 규칙도 프로필별로 등록합니다. "
+                + "동시에 연결할 프로필끼리는 같은 로컬 IP:포트를 쓸 수 없으니 127.0.0.2처럼 다른 루프백 주소나 포트를 사용하세요. "
+                + "'연결'은 로컬 포트가 열린 상태이며, 서버 연결 여부는 핸드셰이크 시각과 '연결 테스트'로 확인하세요.", 12));
 
         root.addView(text("실행 설정", 18));
         CheckBox autoStart = new CheckBox(this);
-        autoStart.setText("부팅 후 자동 연결 (제조사 정책에 따라 제한 가능)");
+        autoStart.setText("부팅 후 자동 연결 (연결해 둔 프로필, 제조사 정책에 따라 제한 가능)");
         autoStart.setChecked(store.prefs().getBoolean("autoStart", false));
         autoStart.setOnCheckedChangeListener((v, enabled) ->
                 store.prefs().edit().putBoolean("autoStart", enabled).apply());
         root.addView(autoStart);
         CheckBox autoReconnect = new CheckBox(this);
-        autoReconnect.setText("네트워크 변경 시 재연결");
+        autoReconnect.setText("네트워크 변경 시 재연결 (진행 중인 연결 유지)");
         autoReconnect.setChecked(store.prefs().getBoolean("autoReconnect", true));
         autoReconnect.setOnCheckedChangeListener((v, enabled) ->
                 store.prefs().edit().putBoolean("autoReconnect", enabled).apply());
         root.addView(autoReconnect);
         root.addView(text("연결 중에는 화면을 닫아도 알림과 함께 백그라운드에서 동작합니다. "
+                + "서버 주소 DNS 조회가 일시적으로 실패하면 연결을 끊지 않고 자동으로 다시 시도합니다. "
                 + "장시간 사용하려면 Android 앱 정보에서 배터리 사용을 '제한 없음'으로 설정하세요. "
                 + "기기 절전 정책에 따라 중단될 수 있습니다.", 12));
         root.addView(button("앱 정보 열기 (배터리 설정)", v -> {
@@ -227,11 +210,12 @@ public final class MainActivity extends Activity {
         logs.setTextIsSelectable(true);
         root.addView(logs);
         root.addView(text("작동 방식", 18));
-        root.addView(text("① WireGuard 프로필을 등록한 후 연결합니다. "
-                + "이 앱은 Android의 VPN 권한을 사용하지 않고 독립적인 터널을 생성합니다.", 12));
-        root.addView(text("② 포워딩 규칙에서 로컬 IP·포트와 원격 서버의 IP·포트를 지정합니다. "
-                + "다른 앱은 규칙에 설정한 로컬 IP:포트로 접속하면 됩니다. "
-                + "설정한 포트의 TCP 연결만 WireGuard로 전달하며 기기 전체 트래픽은 변경하지 않습니다.", 12));
+        root.addView(text("① WireGuard 프로필을 여러 개 등록하고 각각 연결합니다. "
+                + "이 앱은 Android의 VPN 권한을 사용하지 않고 프로필마다 독립적인 터널을 생성하므로, "
+                + "프로필끼리 터널 IP나 AllowedIPs가 겹쳐도 서로 영향을 주지 않습니다.", 12));
+        root.addView(text("② 각 프로필의 포워딩 규칙에서 로컬 IP·포트와 원격 서버의 IP·포트를 지정합니다. "
+                + "다른 앱은 규칙에 설정한 로컬 IP:포트로 접속하면 해당 프로필의 WireGuard로 전달됩니다. "
+                + "설정한 포트의 TCP 연결만 전달하며 기기 전체 트래픽은 변경하지 않습니다.", 12));
         root.addView(text("③ TCP 모드는 데이터를 변경하지 않고 전달합니다. "
                 + "HTTP→HTTPS 모드는 로컬 HTTP 요청을 원격 HTTPS 서버로 중계하고, "
                 + "설정한 도메인으로 TLS 인증서를 검증합니다. "
@@ -240,35 +224,158 @@ public final class MainActivity extends Activity {
                 + "요청의 TLS SNI를 변경하지 않고 전달합니다. 도메인을 각 규칙의 로컬 IP로 해석하는 DNS 설정은 "
                 + "이 앱 외부에서 구성해야 하며, 로컬 443 포트 사용 가능 여부는 기기마다 다릅니다.", 12));
         root.addView(text("④ '연결'은 로컬 포워딩이 시작되었다는 뜻입니다. "
-                + "원격 서버에 실제로 접속 가능한지는 각 규칙의 '연결 테스트'로 확인하세요. "
-                + "백그라운드에서 계속 사용하려면 연결을 유지하고, 중지하려면 '연결 종료'를 누르세요.", 12));
+                + "'마지막 핸드셰이크'가 표시되면 WireGuard 서버와 실제로 통신한 것이며, "
+                + "목적지 서비스 접속 가능 여부는 각 규칙의 '연결 테스트'로 확인하세요. "
+                + "네트워크가 바뀌면 터널을 끊지 않고 서버 주소를 다시 조회해 이어서 사용합니다.", 12));
         showLogs();
     }
 
+    // ----- profiles -----
+
     private void renderProfiles() {
-        renderingProfiles = true;
+        profilesView.removeAllViews();
+        statusViews.clear();
+        toggleButtons.clear();
         JSONArray list = store.profiles();
-        List<String> names = new ArrayList<>();
-        List<String> ids = new ArrayList<>();
-        int selected = 0;
-        for (int i = 0; i < list.length(); i++) {
-            JSONObject p = list.optJSONObject(i);
-            if (p == null) continue;
-            String id = p.optString("id");
-            if (id.equals(store.selectedId())) selected = i;
-            ids.add(id);
-            names.add(p.optString("name"));
+        JSONArray rules = store.rules();
+        for (int p = 0; p < list.length(); p++) {
+            JSONObject profile = list.optJSONObject(p);
+            if (profile == null) continue;
+            final String id = profile.optString("id");
+            LinearLayout card = column();
+            card.setPadding(dp(12), dp(10), dp(12), dp(10));
+            card.setBackgroundColor(0xFFE6ECF2);
+
+            LinearLayout top = row();
+            TextView name = text(profile.optString("name"), 17);
+            name.setTypeface(null, 1);
+            top.addView(name, weight());
+            Button toggle = button("연결", v -> toggleProfile(id));
+            top.addView(toggle);
+            card.addView(top);
+            TextView status = text("", 13);
+            card.addView(status);
+            statusViews.put(id, status);
+            toggleButtons.put(id, toggle);
+
+            LinearLayout actions = row();
+            actions.addView(button("프로필 수정", v -> editProfile(id)), weight());
+            actions.addView(button("삭제", v -> deleteProfile(id)), weight());
+            actions.addView(button("+ 포트 추가", v -> editRule(-1, id)), weight());
+            card.addView(actions);
+
+            TextView rulesTitle = text("포트 포워딩", 14);
+            rulesTitle.setTypeface(null, 1);
+            card.addView(rulesTitle);
+            int shown = 0;
+            for (int i = 0; i < rules.length(); i++) {
+                JSONObject rule = rules.optJSONObject(i);
+                if (rule == null || !id.equals(rule.optString("profileId"))) continue;
+                card.addView(rulePanel(id, i, rule));
+                card.addView(text("", 2));
+                shown++;
+            }
+            if (shown == 0) card.addView(text("등록된 규칙이 없습니다. '+ 포트 추가'로 등록하세요.", 12));
+            profilesView.addView(card);
+            profilesView.addView(text("", 4));
         }
-        if (names.isEmpty()) names.add("QR / .conf / 직접 입력으로 등록하세요");
-        profiles.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, names));
-        profiles.setTag(ids);
-        if (!ids.isEmpty()) profiles.setSelection(Math.min(selected, ids.size() - 1));
-        renderingProfiles = false;
+        if (list.length() == 0) {
+            profilesView.addView(text("QR / .conf / 직접 입력으로 WireGuard 프로필을 등록하세요.", 13));
+        }
         updateStats();
     }
 
+    private View rulePanel(String profileId, int index, JSONObject rule) {
+        LinearLayout panel = column();
+        panel.setPadding(dp(10), dp(6), dp(10), dp(6));
+        panel.setBackgroundColor(0xFFF7F9FB);
+        LinearLayout top = row();
+        top.addView(text(rule.optString("name") + (rule.optBoolean("enabled", true) ? "" : " (꺼짐)"), 15), weight());
+        top.addView(button("수정", v -> editRule(index, profileId)));
+        top.addView(button("삭제", v -> deleteRule(index, profileId)));
+        panel.addView(top);
+        final String localAddress = ProfileStore.localAddress(rule);
+        final int localPort = rule.optInt("localPort");
+        panel.addView(text(localAddress + ":" + localPort + " → "
+                + rule.optString("targetHost") + ":" + rule.optInt("targetPort"), 13));
+        boolean bridge = "http-https".equals(rule.optString("mode", "tcp"));
+        List<String> domains = allowedDomains(rule);
+        panel.addView(text(bridge ? "HTTP → HTTPS · 인증서 도메인: " + rule.optString("tlsHost")
+                : "TCP 그대로 전달 · " + (domains.isEmpty() ? "모든 연결 전달"
+                : "허용 도메인: " + String.join(", ", domains)), 12));
+        panel.addView(button("연결 테스트", v -> testRoute(profileId, localAddress, localPort, bridge)));
+        return panel;
+    }
+
+    /** Running, or connected by the user and waiting for a retry. */
+    private boolean connected(String id) { return running(id) || store.isActive(id); }
+
+    private void toggleProfile(String id) {
+        if (connected(id)) {
+            sendToService(ForwardService.STOP, id);
+            return;
+        }
+        if (store.enabledRuleCount(id) == 0) {
+            error("'" + store.profileName(id) + "'에 사용 중인 포트 포워딩 규칙이 없습니다. '+ 포트 추가'로 먼저 등록하세요.");
+            return;
+        }
+        String conflict = listenerConflict(id);
+        if (conflict != null) { error(conflict); return; }
+        sendToService(ForwardService.START, id);
+    }
+
+    private void connectAll() {
+        List<String> skipped = new ArrayList<>();
+        for (String id : store.profileIds()) {
+            if (connected(id)) continue;
+            if (store.enabledRuleCount(id) == 0 || listenerConflict(id) != null) {
+                skipped.add(store.profileName(id));
+                continue;
+            }
+            sendToService(ForwardService.START, id);
+        }
+        if (!skipped.isEmpty()) {
+            notice("다음 프로필은 연결하지 않았습니다 (규칙 없음 또는 다른 프로필과 같은 로컬 IP:포트 사용): "
+                    + String.join(", ", skipped));
+        }
+    }
+
+    /** Explains why profile id cannot run next to the connected profiles, or null. */
+    private String listenerConflict(String id) {
+        Set<String> active = store.activeProfiles();
+        JSONArray rules = store.rules();
+        for (int i = 0; i < rules.length(); i++) {
+            JSONObject mine = rules.optJSONObject(i);
+            if (mine == null || !id.equals(mine.optString("profileId")) || !mine.optBoolean("enabled", true)) continue;
+            for (int j = 0; j < rules.length(); j++) {
+                JSONObject other = rules.optJSONObject(j);
+                if (other == null || !other.optBoolean("enabled", true)) continue;
+                String owner = other.optString("profileId");
+                if (owner.equals(id) || !(active.contains(owner) || running(owner))) continue;
+                if (other.optInt("localPort") == mine.optInt("localPort")
+                        && ProfileStore.localAddress(other).equals(ProfileStore.localAddress(mine))) {
+                    return "로컬 " + ProfileStore.localAddress(mine) + ":" + mine.optInt("localPort")
+                            + "을(를) 연결 중인 프로필 '" + store.profileName(owner) + "'에서 사용 중입니다. "
+                            + "한 프로필의 규칙에서 로컬 IP(예: 127.0.0.2)나 포트를 바꾸면 동시에 연결할 수 있습니다.";
+                }
+            }
+        }
+        return null;
+    }
+
+    private void sendToService(String action, String id) {
+        Intent intent = new Intent(this, ForwardService.class).setAction(action);
+        if (id != null) intent.putExtra(ForwardService.EXTRA_PROFILE, id);
+        try {
+            if (ForwardService.START.equals(action) || ForwardService.ENSURE.equals(action)) startForegroundService(intent);
+            else startService(intent);
+            if (id != null && statusViews.containsKey(id)) {
+                statusViews.get(id).setText(ForwardService.START.equals(action) ? "연결 시작 중..." : "연결 종료 중...");
+            }
+        } catch (Exception e) { error("서비스 실행 실패: " + e.getClass().getSimpleName()); }
+    }
+
     private void pickConfig() {
-        if (running()) { toast("연결을 종료한 후 프로필을 가져오세요."); return; }
         Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         pick.addCategory(Intent.CATEGORY_OPENABLE);
         pick.setType("*/*");
@@ -316,7 +423,7 @@ public final class MainActivity extends Activity {
                 out.write(buf, 0, n);
             }
             String content = out.toString(StandardCharsets.UTF_8.name());
-            showConfigEditor(false, content);
+            showConfigEditor(null, content);
         } catch (Exception e) { error(e.getMessage()); }
     }
 
@@ -357,8 +464,13 @@ public final class MainActivity extends Activity {
         dialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
     }
 
+    private boolean anyConnected() {
+        for (String id : store.profileIds()) if (connected(id)) return true;
+        return runningStats().length() > 0;
+    }
+
     private void pickBackup() {
-        if (running()) { toast("설정을 복원하려면 연결을 먼저 종료하세요."); return; }
+        if (anyConnected()) { toast("설정을 복원하려면 모든 연결을 먼저 종료하세요."); return; }
         Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         pick.addCategory(Intent.CATEGORY_OPENABLE);
         pick.setType("*/*");
@@ -380,7 +492,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showRestoreDialog(byte[] backupData) {
-        if (running()) { toast("설정을 복원하려면 연결을 먼저 종료하세요."); return; }
+        if (anyConnected()) { toast("설정을 복원하려면 모든 연결을 먼저 종료하세요."); return; }
         LinearLayout form = column();
         form.setPadding(dp(18), 0, dp(18), 0);
         form.addView(text("현재 프로필과 포워딩 규칙을 백업 내용으로 교체합니다. 먼저 현재 설정을 백업하세요.", 13));
@@ -400,7 +512,6 @@ public final class MainActivity extends Activity {
                 dialog.dismiss();
                 buildUi();
                 renderProfiles();
-                renderRoutes();
                 toast("설정을 복원했습니다. 연결은 수동으로 시작하세요.");
             } catch (Exception error) {
                 error("복원 실패: " + error.getMessage());
@@ -412,7 +523,6 @@ public final class MainActivity extends Activity {
     }
 
     private void scanConfig() {
-        if (running()) { toast("연결을 종료한 후 프로필을 등록하세요."); return; }
         GmsBarcodeScannerOptions options = new GmsBarcodeScannerOptions.Builder()
                 .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
                 .enableAutoZoom()
@@ -425,27 +535,27 @@ public final class MainActivity extends Activity {
                         return;
                     }
                     // Only plaintext WireGuard .conf QR payloads are supported.
-                    showConfigEditor(false, content);
+                    showConfigEditor(null, content);
                 })
                 .addOnFailureListener(e -> error(
                         "QR 스캔을 시작할 수 없습니다. Google Play 서비스와 네트워크 연결을 확인하세요."));
     }
 
-    private void editProfile() {
-        if (running()) { toast("연결을 종료한 후 프로필을 수정하세요."); return; }
-        if (store.selectedId().isEmpty()) { toast("수정할 프로필을 선택하세요."); return; }
+    private void editProfile(String id) {
+        if (connected(id)) { toast("이 프로필의 연결을 종료한 후 수정하세요."); return; }
         try {
-            showConfigEditor(true, store.configText());
+            showConfigEditor(id, store.configText(id));
         } catch (Exception e) { error("프로필을 읽지 못했습니다: " + e.getClass().getSimpleName()); }
     }
 
-    // Shared editor for QR imports, .conf files, manual creation, and editing.
-    private void showConfigEditor(boolean editing, String config) {
-        if (running()) { toast("연결을 종료한 후 프로필을 변경하세요."); return; }
+    // Shared editor for QR imports, .conf files, manual creation (editingId == null), and editing.
+    private void showConfigEditor(String editingId, String config) {
+        boolean editing = editingId != null;
+        if (editing && connected(editingId)) { toast("이 프로필의 연결을 종료한 후 변경하세요."); return; }
         LinearLayout form = column();
         form.setPadding(dp(16), dp(8), dp(16), dp(8));
         EditText name = field(form, "프로필 이름", editing
-                ? store.profileName(store.selectedId()) : "Home", false);
+                ? store.profileName(editingId) : "Home", false);
         EditText content = new EditText(this);
         content.setHint("[Interface]\nPrivateKey = ...\nAddress = ...\n\n[Peer]\nPublicKey = ...\nEndpoint = ...\nAllowedIPs = ...");
         content.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -473,8 +583,12 @@ public final class MainActivity extends Activity {
                 try {
                     String label = name.getText().toString();
                     String raw = content.getText().toString();
-                    if (editing) store.updateSelected(label, raw);
-                    else store.addProfile(label, raw);
+                    if (editing) {
+                        if (connected(editingId)) throw new IllegalStateException("이 프로필의 연결을 먼저 종료하세요.");
+                        store.updateProfile(editingId, label, raw);
+                    } else {
+                        store.addProfile(label, raw);
+                    }
                     LogStore.add(this, editing ? "WireGuard 프로필 수정 완료" : "WireGuard 프로필 등록 완료");
                     dialog.dismiss();
                     renderProfiles();
@@ -488,49 +602,21 @@ public final class MainActivity extends Activity {
         dialog.show();
     }
 
-    private void deleteProfile() {
-        if (running()) { toast("연결을 종료한 후 프로필을 삭제하세요."); return; }
-        if (store.selectedId().isEmpty()) return;
+    private void deleteProfile(String id) {
+        if (connected(id)) { toast("이 프로필의 연결을 종료한 후 삭제하세요."); return; }
+        int ruleCount = store.rulesFor(id).length();
         new AlertDialog.Builder(this).setTitle("프로필 삭제")
-                .setMessage("저장된 WireGuard 설정을 삭제합니다.")
+                .setMessage("'" + store.profileName(id) + "'의 WireGuard 설정"
+                        + (ruleCount > 0 ? "과 포트 포워딩 규칙 " + ruleCount + "개" : "") + "를 삭제합니다.")
                 .setNegativeButton("취소", null)
                 .setPositiveButton("삭제", (dialog, which) -> {
-                    store.deleteSelected();
+                    if (connected(id)) { toast("이 프로필의 연결을 종료한 후 삭제하세요."); return; }
+                    store.deleteProfile(id);
                     renderProfiles();
                 }).show();
     }
 
-    private void renderRoutes() {
-        routesView.removeAllViews();
-        JSONArray rules = store.rules();
-        for (int i = 0; i < rules.length(); i++) {
-            JSONObject rule = rules.optJSONObject(i);
-            if (rule == null) continue;
-            final int index = i;
-            LinearLayout panel = column();
-            panel.setPadding(dp(12), dp(8), dp(12), dp(8));
-            panel.setBackgroundColor(0xFFF2F4F7);
-            LinearLayout top = row();
-            top.addView(text(rule.optString("name") + (rule.optBoolean("enabled", true) ? "" : " (꺼짐)"), 15),
-                    new LinearLayout.LayoutParams(0, -2, 1));
-            top.addView(button("수정", v -> editRule(index)));
-            top.addView(button("삭제", v -> deleteRule(index)));
-            panel.addView(top);
-            String rawLocalAddress = rule.optString("localAddress", "127.0.0.1").trim();
-            final String localAddress = rawLocalAddress.isEmpty() ? "127.0.0.1" : rawLocalAddress;
-            panel.addView(text(localAddress + ":" + rule.optInt("localPort") + " → "
-                    + rule.optString("targetHost") + ":" + rule.optInt("targetPort"), 13));
-            boolean bridge = "http-https".equals(rule.optString("mode", "tcp"));
-            List<String> domains = allowedDomains(rule);
-            panel.addView(text(bridge ? "HTTP → HTTPS · 인증서 도메인: " + rule.optString("tlsHost")
-                    : "TCP 그대로 전달 · " + (domains.isEmpty() ? "모든 연결 전달"
-                    : "허용 도메인: " + String.join(", ", domains)), 12));
-            panel.addView(button("연결 테스트", v -> testRoute(localAddress, rule.optInt("localPort"))));
-            routesView.addView(panel);
-            TextView space = text("", 4);
-            routesView.addView(space);
-        }
-    }
+    // ----- forwarding rules -----
 
     private EditText field(LinearLayout parent, String hint, String value, boolean number) {
         EditText input = new EditText(this);
@@ -542,15 +628,16 @@ public final class MainActivity extends Activity {
         return input;
     }
 
-    private void editRule(int index) {
-        if (running()) { toast("규칙을 변경하려면 연결을 종료하세요."); return; }
+    private void editRule(int index, String profileId) {
+        if (connected(profileId)) { toast("규칙을 변경하려면 이 프로필의 연결을 종료하세요."); return; }
         JSONObject old = index >= 0 ? store.rules().optJSONObject(index) : null;
         LinearLayout form = column();
         form.setPadding(dp(18), 0, dp(18), 0);
+        form.addView(text("프로필: " + store.profileName(profileId), 13));
         EditText name = field(form, "규칙 이름", old == null ? "" : old.optString("name"), false);
         EditText localAddress = field(form, "로컬 IP (예: 127.0.0.1 또는 127.0.0.2)",
                 old == null ? "127.0.0.1" : old.optString("localAddress", "127.0.0.1"), false);
-        form.addView(text("프로필마다 다른 127.x.x.x 주소를 사용하면 동일한 포트를 별도로 열 수 있습니다. 외부 IP는 사용할 수 없습니다.", 12));
+        form.addView(text("동시에 연결할 다른 프로필과 같은 포트를 쓰려면 프로필마다 다른 127.x.x.x 주소를 사용하세요. 외부 IP는 사용할 수 없습니다.", 12));
         EditText local = field(form, "로컬 포트", old == null ? "" : "" + old.optInt("localPort"), true);
         form.addView(text("443 포트는 기기 보안 정책에 따라 수신이 거부될 수 있습니다. "
                 + "수신 실패 시 8443 같은 포트를 사용하세요.", 12));
@@ -598,6 +685,7 @@ public final class MainActivity extends Activity {
                 .setNegativeButton("취소", null)
                 .setPositiveButton("저장", (dialog, which) -> {
                     try {
+                        if (connected(profileId)) throw new IllegalStateException("이 프로필의 연결을 먼저 종료하세요.");
                         int lp = Integer.parseInt(local.getText().toString());
                         int rp = Integer.parseInt(remote.getText().toString());
                         String bindAddress = localAddress.getText().toString().trim();
@@ -610,14 +698,18 @@ public final class MainActivity extends Activity {
                             throw new IllegalArgumentException("포트 또는 대상 IPv4 주소를 확인하세요.");
                         }
                         JSONArray rules = store.rules();
+                        String sharedWith = null;
                         for (int i = 0; i < rules.length(); i++) {
                             JSONObject existing = rules.optJSONObject(i);
-                            if (i != index && existing != null && enabled.isChecked()
-                                    && existing.optBoolean("enabled", true)
-                                    && existing.optInt("localPort") == lp
-                                    && defaultLocalAddress(existing).equals(bindAddress)) {
-                                throw new IllegalArgumentException("동일한 로컬 IP와 포트가 이미 등록되어 있습니다.");
+                            if (i == index || existing == null || !enabled.isChecked()
+                                    || !existing.optBoolean("enabled", true)
+                                    || existing.optInt("localPort") != lp
+                                    || !ProfileStore.localAddress(existing).equals(bindAddress)) continue;
+                            String owner = existing.optString("profileId");
+                            if (owner.equals(profileId)) {
+                                throw new IllegalArgumentException("이 프로필에 동일한 로컬 IP와 포트가 이미 등록되어 있습니다.");
                             }
+                            sharedWith = store.profileName(owner);
                         }
                         String selectedMode = mode.getSelectedItemPosition() == 1 ? "http-https" : "tcp";
                         String domain = tlsHost.getText().toString().trim();
@@ -626,14 +718,20 @@ public final class MainActivity extends Activity {
                         }
                         List<String> allowed = "tcp".equals(selectedMode)
                                 ? DomainList.parse(domains.getText().toString()) : new ArrayList<>();
-                        JSONObject updated = ProfileStore.rule(name.getText().toString().trim(),
+                        JSONObject updated = ProfileStore.rule(profileId, name.getText().toString().trim(),
                                 bindAddress, lp, ip, rp, enabled.isChecked(), selectedMode, domain, allowed);
                         if (index < 0) rules.put(updated);
                         else rules.put(index, updated);
                         store.saveRules(rules);
-                        renderRoutes();
-                        LogStore.add(this, "포트 규칙 저장: " + bindAddress + ":" + lp + " -> " + ip + ":" + rp
+                        renderProfiles();
+                        LogStore.add(this, "포트 규칙 저장 (" + store.profileName(profileId) + "): "
+                                + bindAddress + ":" + lp + " -> " + ip + ":" + rp
                                 + (allowed.isEmpty() ? "" : " (허용 도메인 " + allowed.size() + "개)"));
+                        if (sharedWith != null) {
+                            notice("저장했습니다. 다만 프로필 '" + sharedWith + "'도 " + bindAddress + ":" + lp
+                                    + "을(를) 사용하므로 두 프로필은 동시에 연결할 수 없습니다. "
+                                    + "동시에 쓰려면 로컬 IP를 127.0.0.2처럼 다르게 지정하세요.");
+                        }
                     } catch (Exception e) { error(e.getMessage()); }
                 }).show();
     }
@@ -647,11 +745,6 @@ public final class MainActivity extends Activity {
             if (!domain.isEmpty()) out.add(domain);
         }
         return out;
-    }
-
-    private static String defaultLocalAddress(JSONObject rule) {
-        String address = rule.optString("localAddress", "127.0.0.1").trim();
-        return address.isEmpty() ? "127.0.0.1" : address;
     }
 
     private static boolean validIpv4(String host) {
@@ -673,8 +766,8 @@ public final class MainActivity extends Activity {
         return host.length() <= 253 && !host.matches("[0-9.]+") && host.matches("(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$");
     }
 
-    private void deleteRule(int index) {
-        if (running()) { toast("연결을 종료한 후 규칙을 삭제하세요."); return; }
+    private void deleteRule(int index, String profileId) {
+        if (connected(profileId)) { toast("이 프로필의 연결을 종료한 후 규칙을 삭제하세요."); return; }
         new AlertDialog.Builder(this).setTitle("포트 규칙 삭제")
                 .setNegativeButton("취소", null)
                 .setPositiveButton("삭제", (dialog, which) -> {
@@ -682,43 +775,21 @@ public final class MainActivity extends Activity {
                     JSONArray updated = new JSONArray();
                     for (int i = 0; i < old.length(); i++) if (i != index) updated.put(old.opt(i));
                     store.saveRules(updated);
-                    renderRoutes();
+                    renderProfiles();
                 }).show();
     }
 
-    private void toggleConnection() {
-        if (!running() && store.selectedId().isEmpty()) { toast("WireGuard .conf부터 가져오세요."); return; }
-        String action = running() || store.prefs().getBoolean("desiredRunning", false)
-                ? ForwardService.STOP : ForwardService.START;
-        Intent intent = new Intent(this, ForwardService.class).setAction(action);
-        try {
-            if (ForwardService.START.equals(action)) startForegroundService(intent);
-            else startService(intent);
-            status.setText(ForwardService.START.equals(action) ? "연결 시작 중..." : "연결 종료 중...");
-        } catch (Exception e) { error("서비스 실행 실패: " + e.getClass().getSimpleName()); }
-    }
-
-    private void testRoute(String localAddress, int port) {
-        if (!running()) { toast("먼저 연결을 시작하세요."); return; }
-        status.setText("TCP 연결 테스트 진행 중...");
+    private void testRoute(String profileId, String localAddress, int port, boolean https) {
+        if (!running(profileId)) { toast("먼저 이 프로필을 연결하세요."); return; }
+        toast("연결 테스트 진행 중...");
         new Thread(() -> {
             String result;
+            String where = store.profileName(profileId) + ", " + localAddress + ":" + port;
             try {
-                Engine.probeAt(localAddress, port);
-                boolean https = false;
-                JSONArray rules = store.rules();
-                for (int i = 0; i < rules.length(); i++) {
-                    JSONObject rule = rules.optJSONObject(i);
-                    if (rule != null && rule.optInt("localPort") == port
-                            && defaultLocalAddress(rule).equals(localAddress)) {
-                        https = "http-https".equals(rule.optString("mode", "tcp"));
-                        break;
-                    }
-                }
-                result = (https ? "HTTPS TLS 인증서 검증 성공" : "TCP 연결 성공")
-                        + " (WireGuard 경유, " + localAddress + ":" + port + ")";
+                Engine.probeTunnel(profileId, localAddress, port);
+                result = (https ? "HTTPS TLS 인증서 검증 성공" : "TCP 연결 성공") + " (WireGuard 경유, " + where + ")";
             } catch (Exception e) {
-                result = "TCP " + localAddress + ":" + port + " 연결 실패: " + e.getMessage();
+                result = "연결 실패 (" + where + "): " + e.getMessage();
             }
             final String message = result;
             LogStore.add(this, message);
@@ -730,48 +801,79 @@ public final class MainActivity extends Activity {
         }, "connection-probe").start();
     }
 
-    private boolean running() {
-        try { return new JSONObject(Engine.stats()).optBoolean("running"); }
+    // ----- status -----
+
+    private static JSONObject runningStats() {
+        try { return new JSONObject(Engine.stats()); }
+        catch (Exception | LinkageError e) { return new JSONObject(); }
+    }
+
+    private static boolean running(String id) {
+        try { return Engine.isRunning(id); }
         catch (Exception | LinkageError e) { return false; }
     }
 
     private void updateStats() {
-        try {
-            JSONObject data = new JSONObject(Engine.stats());
-            boolean active = data.optBoolean("running");
-            String failure = store.prefs().getString("lastError", "");
-            status.setText(active ? "포워딩 활성화 (테스트로 서버 연결 확인)"
-                    : (failure.isEmpty() ? "연결 안 됨" : "오류: " + failure));
-            if (active) {
-                long now = SystemClock.elapsedRealtime();
-                long tx = data.optLong("tx");
-                long rx = data.optLong("rx");
+        JSONObject all;
+        try { all = new JSONObject(Engine.stats()); }
+        catch (Exception | LinkageError e) {
+            summary.setText("네이티브 엔진을 로드할 수 없습니다.");
+            samples.clear();
+            return;
+        }
+        Set<String> active = store.activeProfiles();
+        long now = SystemClock.elapsedRealtime();
+        long wallSeconds = System.currentTimeMillis() / 1000;
+        int up = 0;
+        int waiting = 0;
+        for (Map.Entry<String, TextView> entry : statusViews.entrySet()) {
+            String id = entry.getKey();
+            JSONObject s = all.optJSONObject(id);
+            String error = store.profileError(id);
+            String line;
+            if (s != null) {
+                up++;
+                long tx = s.optLong("tx");
+                long rx = s.optLong("rx");
                 double upload = 0;
                 double download = 0;
-                if (lastSampleAt > 0 && now > lastSampleAt && tx >= lastTx && rx >= lastRx) {
-                    double intervalSeconds = (now - lastSampleAt) / 1000.0;
-                    upload = (tx - lastTx) / intervalSeconds;
-                    download = (rx - lastRx) / intervalSeconds;
+                long[] last = samples.get(id);
+                if (last != null && now > last[0] && tx >= last[1] && rx >= last[2]) {
+                    double intervalSeconds = (now - last[0]) / 1000.0;
+                    upload = (tx - last[1]) / intervalSeconds;
+                    download = (rx - last[2]) / intervalSeconds;
                 }
-                lastTx = tx;
-                lastRx = rx;
-                lastSampleAt = now;
-                counters.setText("업로드 " + humanRate(upload)
-                        + " · 다운로드 " + humanRate(download)
-                        + " · 활성 연결 " + data.optInt("active")
-                        + (data.optString("error").isEmpty() ? "" : "\n최근 연결 오류: " + data.optString("error")));
+                samples.put(id, new long[]{now, tx, rx});
+                long handshake = s.optLong("handshake");
+                String shake = handshake <= 0 ? "서버 핸드셰이크 대기 중"
+                        : "마지막 핸드셰이크 " + ago(Math.max(0, wallSeconds - handshake))
+                        + (wallSeconds - handshake > 180 ? " (유휴 상태면 정상)" : "");
+                line = "● 연결됨 · " + shake
+                        + "\n업로드 " + humanRate(upload) + " · 다운로드 " + humanRate(download)
+                        + " · 활성 연결 " + s.optInt("active")
+                        + (s.optString("endpoint").isEmpty() ? "" : "\n서버 " + s.optString("endpoint"))
+                        + (s.optString("error").isEmpty() ? "" : "\n최근 연결 오류: " + s.optString("error"));
+            } else if (active.contains(id)) {
+                waiting++;
+                samples.remove(id);
+                line = "◌ 연결 시도 중" + (error.isEmpty() ? "" : "\n" + error);
             } else {
-                lastSampleAt = 0;
-                lastTx = 0;
-                lastRx = 0;
-                counters.setText("");
+                samples.remove(id);
+                line = error.isEmpty() ? "연결 안 됨" : "오류: " + error;
             }
-            connectButton.setText(active || store.prefs().getBoolean("desiredRunning", false) ? "연결 종료" : "연결");
-            profiles.setEnabled(!active);
-        } catch (Exception | LinkageError e) {
-            status.setText("네이티브 엔진을 로드할 수 없습니다.");
-            lastSampleAt = 0;
+            entry.getValue().setText(line);
+            Button toggle = toggleButtons.get(id);
+            if (toggle != null) toggle.setText(s != null || active.contains(id) ? "연결 종료" : "연결");
         }
+        int total = statusViews.size();
+        summary.setText(total == 0 ? "" : "프로필 " + total + "개 · 연결됨 " + up + "개"
+                + (waiting > 0 ? " · 연결 시도 중 " + waiting + "개" : ""));
+    }
+
+    private static String ago(long seconds) {
+        if (seconds < 60) return seconds + "초 전";
+        if (seconds < 3600) return (seconds / 60) + "분 전";
+        return (seconds / 3600) + "시간 전";
     }
 
     private static String humanRate(double bytesPerSecond) {
@@ -783,4 +885,5 @@ public final class MainActivity extends Activity {
     private void showLogs() { logs.setText(LogStore.read(this)); }
     private void toast(String message) { Toast.makeText(this, message, Toast.LENGTH_SHORT).show(); }
     private void error(String message) { new AlertDialog.Builder(this).setTitle("오류").setMessage(message).setPositiveButton("확인", null).show(); }
+    private void notice(String message) { new AlertDialog.Builder(this).setTitle("알림").setMessage(message).setPositiveButton("확인", null).show(); }
 }
